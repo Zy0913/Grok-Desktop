@@ -1,5 +1,6 @@
 /**
  * 用 Electron 将 assets/icon.svg 栅格化为 icon.png / icon-32.png（窗口与托盘）。
+ * icon.png 需 ≥512（electron-builder mac 要求）；默认输出 1024。
  * 用法：npx electron scripts/gen-app-icon.mjs
  */
 import { app, BrowserWindow } from "electron";
@@ -13,7 +14,7 @@ const outPng = path.join(root, "assets", "icon.png");
 const outPng32 = path.join(root, "assets", "icon-32.png");
 
 const sizes = [
-  { size: 256, out: outPng },
+  { size: 1024, out: outPng },
   { size: 32, out: outPng32 },
 ];
 

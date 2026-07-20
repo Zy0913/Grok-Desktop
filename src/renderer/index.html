@@ -10,86 +10,106 @@
     <title>Grok Desktop</title>
     <link rel="icon" type="image/png" href="./favicon.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles-glass.css" />
+    <link rel="stylesheet" href="./styles-mac.css" />
   </head>
   <body>
+    <!-- 须在 #app 外：标题栏 drag 层 z-index 高于 #app，侧栏开关需同层可点 -->
+    <button
+      type="button"
+      class="chrome-sidebar-toggle"
+      id="btn-sidebar-toggle"
+      data-i18n-title="nav.toggleSidebarTitle"
+      title="展开 / 收起侧栏（Ctrl+B）"
+      data-i18n-aria-label="nav.toggleSidebar"
+      aria-label="展开或收起侧栏"
+      aria-pressed="true"
+    >
+      <span data-sf="sidebarLeft" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
+    </button>
+
     <!-- Codex Desktop 对齐：浅色 · 左导航 · 中对话/可拖拽侧栏 -->
     <div id="app" class="codex-app">
       <!-- 左侧栏 -->
       <aside class="sidebar" id="app-sidebar" data-i18n-aria-label="nav.main" aria-label="主导航">
         <div class="sidebar-brand">
-          <svg class="sidebar-brand-mark" width="28" height="26" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M13.2371 21.0407L24.3186 12.8506C24.8619 12.4491 25.6384 12.6057 25.8973 13.2294C27.2597 16.5185 26.651 20.4712 23.9403 23.1851C21.2297 25.8989 17.4581 26.4941 14.0108 25.1386L10.2449 26.8843C15.6463 30.5806 22.2053 29.6665 26.304 25.5601C29.5551 22.3051 30.562 17.8683 29.6205 13.8673L29.629 13.8758C28.2637 7.99809 29.9647 5.64871 33.449 0.844576C33.5314 0.730667 33.6139 0.616757 33.6964 0.5L29.1113 5.09055V5.07631L13.2343 21.0436" fill="currentColor"/>
-            <path d="M10.9503 23.0313C7.07343 19.3235 7.74185 13.5853 11.0498 10.2763C13.4959 7.82722 17.5036 6.82767 21.0021 8.2971L24.7595 6.55998C24.0826 6.07017 23.215 5.54334 22.2195 5.17313C17.7198 3.31926 12.3326 4.24192 8.67479 7.90126C5.15635 11.4239 4.0499 16.8403 5.94992 21.4622C7.36924 24.9165 5.04257 27.3598 2.69884 29.826C1.86829 30.7002 1.0349 31.5745 0.36364 32.5L10.9474 23.0341" fill="currentColor"/>
-          </svg>
+          <div class="sidebar-brand-left">
+            <svg class="sidebar-brand-mark" width="22" height="20" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M13.2371 21.0407L24.3186 12.8506C24.8619 12.4491 25.6384 12.6057 25.8973 13.2294C27.2597 16.5185 26.651 20.4712 23.9403 23.1851C21.2297 25.8989 17.4581 26.4941 14.0108 25.1386L10.2449 26.8843C15.6463 30.5806 22.2053 29.6665 26.304 25.5601C29.5551 22.3051 30.562 17.8683 29.6205 13.8673L29.629 13.8758C28.2637 7.99809 29.9647 5.64871 33.449 0.844576C33.5314 0.730667 33.6139 0.616757 33.6964 0.5L29.1113 5.09055V5.07631L13.2343 21.0436" fill="currentColor"/>
+              <path d="M10.9503 23.0313C7.07343 19.3235 7.74185 13.5853 11.0498 10.2763C13.4959 7.82722 17.5036 6.82767 21.0021 8.2971L24.7595 6.55998C24.0826 6.07017 23.215 5.54334 22.2195 5.17313C17.7198 3.31926 12.3326 4.24192 8.67479 7.90126C5.15635 11.4239 4.0499 16.8403 5.94992 21.4622C7.36924 24.9165 5.04257 27.3598 2.69884 29.826C1.86829 30.7002 1.0349 31.5745 0.36364 32.5L10.9474 23.0341" fill="currentColor"/>
+            </svg>
+            <span class="sidebar-brand-name">Grok</span>
+            <span class="sidebar-brand-chev" data-sf="chevronDown" data-sf-size="11" aria-hidden="true"></span>
+          </div>
           <button
             type="button"
-            class="icon-ghost sm sidebar-toggle-btn"
-            id="btn-sidebar-collapse"
-            data-i18n-title="nav.collapseSidebarTitle" title="收起侧栏（Ctrl+B）"
-            data-i18n-aria-label="nav.collapseSidebar" aria-label="收起侧栏"
+            class="icon-ghost sm sidebar-search-btn"
+            id="btn-search"
+            data-i18n-title="nav.search"
+            title="搜索"
+            data-i18n-aria-label="nav.search"
+            aria-label="搜索"
           >
-            <svg class="top-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="3" y="5" width="18" height="14" rx="2.5"/>
-              <path d="M9 5v14"/>
-              <path d="M14 12H7"/>
-              <path d="M9.5 9.5 7 12l2.5 2.5"/>
-            </svg>
+            <span data-sf="search" data-sf-class="sf-ico sf-ico--tool" data-sf-size="15"></span>
           </button>
         </div>
         <div class="sidebar-top-actions">
           <button type="button" class="nav-row primary-nav" id="btn-new-chat">
-            <span class="nav-ico">✎</span> <span data-i18n="nav.newChat">新对话</span>
+            <span class="nav-ico" data-sf="compose"></span> <span data-i18n="nav.newChat">新对话</span>
           </button>
           <button type="button" class="nav-row" id="btn-continue-recent" data-i18n-title="nav.continueRecentTitle" title="继续上次">
-            <span class="nav-ico">↻</span> <span data-i18n="nav.continueRecent">继续上次</span>
-          </button>
-          <button type="button" class="nav-row" id="btn-search">
-            <span class="nav-ico">⌕</span> <span data-i18n="nav.search">搜索</span>
+            <span class="nav-ico" data-sf="continue"></span> <span data-i18n="nav.continueRecent">继续上次</span>
           </button>
           <button type="button" class="nav-row" id="btn-plugins">
-            <span class="nav-ico">◫</span> <span data-i18n="nav.plugins">插件</span>
+            <span class="nav-ico" data-sf="plugins"></span> <span data-i18n="nav.plugins">插件</span>
           </button>
           <button type="button" class="nav-row" id="btn-automations">
-            <span class="nav-ico">⏱</span> <span data-i18n="nav.automations">自动化</span>
+            <span class="nav-ico" data-sf="timer"></span> <span data-i18n="nav.automations">自动化</span>
           </button>
         </div>
 
         <div class="sidebar-section flex-1">
-          <div class="section-label" data-i18n="nav.projects">项目</div>
+          <div class="sidebar-section-head">
+            <div class="section-label" data-i18n="nav.projects">项目</div>
+            <button
+              type="button"
+              class="icon-ghost sm section-add-btn"
+              id="btn-add-project"
+              data-i18n-title="nav.addProject"
+              title="添加项目"
+              data-i18n-aria-label="nav.addProject"
+              aria-label="添加项目"
+            >
+              <span data-sf="plus" data-sf-class="sf-ico sf-ico--tool" data-sf-size="14"></span>
+            </button>
+          </div>
           <div id="project-list" class="project-list"></div>
-          <button type="button" class="nav-row muted" id="btn-add-project">
-            <span class="nav-ico">+</span> <span data-i18n="nav.addProject">添加项目</span>
-          </button>
         </div>
 
         <div class="sidebar-bottom">
           <button type="button" class="nav-row" id="btn-settings">
-            <span class="nav-ico">⚙</span> <span data-i18n="nav.settings">设置</span>
+            <span class="nav-ico" data-sf="settings"></span> <span data-i18n="nav.settings">设置</span>
           </button>
         </div>
+        <div
+          class="sidebar-resizer"
+          id="sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          data-i18n-aria-label="nav.resizeSidebar"
+          aria-label="拖动调整侧栏宽度"
+          data-i18n-title="nav.resizeSidebar"
+          title="拖动调整侧栏宽度"
+        ></div>
       </aside>
 
       <!-- 中间主工作区：顶栏 + 可分屏 -->
       <main class="main">
         <header class="main-top">
-          <div class="main-top-left">
-            <button
-              type="button"
-              class="icon-ghost top-icon-btn hidden"
-              id="btn-sidebar-expand"
-              data-i18n-title="nav.expandSidebarTitle" title="展开侧栏（Ctrl+B）"
-              data-i18n-aria-label="nav.expandSidebar" aria-label="展开侧栏"
-            >
-              <svg class="top-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="3" y="5" width="18" height="14" rx="2.5"/>
-                <path d="M9 5v14"/>
-                <path d="M7 12h7"/>
-                <path d="M11.5 9.5 14 12l-2.5 2.5"/>
-              </svg>
-            </button>
-          </div>
+          <div class="main-top-left" aria-hidden="true"></div>
           <button type="button" class="pill-btn" id="btn-open-location">
-            <span class="nav-ico">📁</span> <span data-i18n="nav.openLocation">打开位置 ▾</span>
+            <span class="nav-ico" data-sf="folder" data-sf-size="14"></span>
+            <span data-i18n="nav.openLocation">打开位置</span>
           </button>
           <div class="main-top-right">
             <!-- 对齐 Codex 顶栏：四角展开 · 单窗横线 · 重叠双窗 -->
@@ -101,13 +121,7 @@
               aria-pressed="false"
               data-i18n-aria-label="nav.fullscreen" aria-label="全屏"
             >
-              <!-- 与右侧栏图标统一 4–20 外框光学尺寸 -->
-              <svg class="top-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M9 4H4v5"/>
-                <path d="M15 4h5v5"/>
-                <path d="M9 20H4v-5"/>
-                <path d="M15 20h5v-5"/>
-              </svg>
+              <span data-sf="expand" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
             </button>
             <button
               type="button"
@@ -118,10 +132,7 @@
               aria-hidden="true"
               tabindex="-1"
             >
-              <svg class="top-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="4" y="4" width="16" height="16" rx="2"/>
-                <path d="M8 12h8"/>
-              </svg>
+              <span data-sf="list" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
             </button>
             <button
               type="button"
@@ -131,10 +142,7 @@
               aria-pressed="false"
               data-i18n-aria-label="nav.sidePanel" aria-label="右侧栏"
             >
-              <svg class="top-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="4" y="4" width="16" height="16" rx="2"/>
-                <path d="M15 4v16"/>
-              </svg>
+              <span data-sf="sidebarRight" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
             </button>
           </div>
         </header>
@@ -143,21 +151,13 @@
           <!-- 左：对话 / 欢迎 -->
           <div class="chat-pane" id="chat-pane">
             <section id="welcome" class="welcome">
-              <div class="welcome-logo" aria-hidden="true">
-                <svg width="420" height="84" viewBox="0 0 149 33" fill="none" xmlns="http://www.w3.org/2000/svg" fill-rule="evenodd" clip-rule="evenodd">
-                  <path d="M24.3187 12.8506L13.2371 21.0407L29.1114 5.07631V5.09055L33.6964 0.5C33.6139 0.616757 33.5315 0.730667 33.449 0.844576C29.9647 5.64871 28.2637 7.99809 29.629 13.8758L29.6205 13.8673C30.562 17.8683 29.5551 22.3051 26.304 25.5601C22.2053 29.6665 15.6463 30.5806 10.2449 26.8843L14.0108 25.1386C17.4581 26.4941 21.2297 25.899 23.9404 23.1851C26.651 20.4712 27.2597 16.5185 25.8973 13.2294C25.6384 12.6057 24.8619 12.4491 24.3187 12.8506Z" fill="currentColor"/>
-                  <path d="M11.0498 10.2763C7.74186 13.5853 7.07344 19.3235 10.9503 23.0313L10.9474 23.0341L0.363647 32.5C1.02597 31.5868 1.84612 30.7235 2.66565 29.8609L2.66566 29.8609L2.69885 29.826L2.70569 29.8188C5.04711 27.3551 7.36787 24.9131 5.94992 21.4622C4.04991 16.8403 5.15635 11.4239 8.6748 7.90126C12.3326 4.24192 17.7198 3.31926 22.2195 5.17313C23.215 5.54334 24.0826 6.07017 24.7595 6.55998L21.0022 8.2971C17.5036 6.82767 13.4959 7.82722 11.0498 10.2763Z" fill="currentColor"/>
-                  <path d="M37.8333 19.3306C38.0527 22.2268 40.2688 24.5525 44.5254 24.5525C48.2114 24.5525 50.8663 22.7753 50.8663 19.8352C50.8663 17.2462 49.111 16.0394 46.0612 15.3592L43.6477 14.7888C41.8705 14.3938 40.9051 13.7575 40.9051 12.6166C40.9051 11.2124 42.2435 10.3128 44.1962 10.3128C46.0832 10.3128 47.4655 11.1466 47.6849 13.2748H50.3836C50.2081 10.1373 47.7726 8.09674 44.1962 8.09674C40.6637 8.09674 38.2502 10.0056 38.2502 12.7921C38.2502 15.7761 40.7954 16.6976 43.0772 17.2242L45.4688 17.7508C47.3777 18.1896 48.1456 18.9795 48.1456 20.0107C48.1456 21.6124 46.5439 22.3146 44.5254 22.3146C42.3971 22.3146 40.9051 21.5027 40.576 19.3306H37.8333Z" fill="currentColor"/>
-                  <path d="M56.9253 24.399C54.0071 24.399 53.0198 22.6876 53.0198 20.274V12.7921H55.4991V20.1424C55.4991 21.4369 56.2451 22.2926 57.5616 22.2926C59.5582 22.2926 60.5456 20.8006 60.5456 18.8917V12.7921H63.0249V24.1357H60.6553V22.2048H60.6114C59.8215 23.7188 58.5709 24.399 56.9253 24.399Z" fill="currentColor"/>
-                  <path d="M65.3942 12.7921V28.48H67.8736V22.5998H67.9394C68.7293 23.9163 70.2651 24.399 71.428 24.399C74.7631 24.399 76.5403 21.6783 76.5403 18.4529C76.5403 15.2276 74.7631 12.5069 71.428 12.5069C70.2651 12.5069 68.7293 12.9896 67.9394 14.3061H67.8736V12.7921H65.3942ZM70.8795 22.3365C68.7073 22.3365 67.8077 20.4057 67.8077 18.4529C67.8077 16.4343 68.7073 14.5474 70.8795 14.5474C73.0955 14.5474 73.9512 16.4343 73.9512 18.4529C73.9512 20.4057 73.0955 22.3365 70.8795 22.3365Z" fill="currentColor"/>
-                  <path d="M83.4145 24.399C79.8601 24.399 77.8415 21.8977 77.8415 18.4529C77.8415 14.9204 79.8601 12.5069 83.217 12.5069C86.4863 12.5069 88.4829 14.7229 88.5926 18.1458L87.5175 19.155H80.3647C80.5622 21.1736 81.6373 22.3804 83.4145 22.3804C84.709 22.3804 85.6306 21.7002 86.0913 20.4496H88.5487C87.9782 23.0605 86.0474 24.399 83.4145 24.399ZM80.4305 17.3778H86.1352C85.8719 15.447 84.7529 14.4597 83.217 14.4597C81.8128 14.4597 80.7377 15.5348 80.4305 17.3778Z" fill="currentColor"/>
-                  <path d="M90.4185 14.5913V24.1357H92.8979V14.8985H96.935V12.7921H92.5029L90.4185 14.5913Z" fill="currentColor"/>
-                  <path d="M106.565 24.4252C101.684 24.4252 98.7743 20.9105 98.7743 16.1179C98.7743 11.2801 101.788 7.67999 106.66 7.67999C110.468 7.67999 113.255 9.61507 113.912 13.2152H110.989C110.558 11.1677 108.836 10.0201 106.66 10.0201C103.148 10.0201 101.607 13.0352 101.607 16.1179C101.607 19.2005 103.148 22.193 106.66 22.193C110.014 22.193 111.487 19.7854 111.601 17.7829H106.547V15.453H114.184L114.172 16.6712C114.172 21.1975 112.311 24.4252 106.565 24.4252Z" fill="currentColor"/>
-                  <path d="M116.359 14.34V24.1279H118.919V14.6551H123.089V12.495H118.511L116.359 14.34ZM129.354 24.3976C125.547 24.3976 123.485 21.72 123.485 18.2999C123.485 14.8572 125.547 12.2021 129.354 12.2021C133.184 12.2021 135.223 14.8572 135.223 18.2999C135.223 21.72 133.184 24.3976 129.354 24.3976ZM126.159 18.2999C126.159 20.955 127.609 22.2826 129.354 22.2826C131.122 22.2826 132.549 20.955 132.549 18.2999C132.549 15.6449 131.122 14.2948 129.354 14.2948C127.609 14.2948 126.159 15.6449 126.159 18.2999Z" fill="currentColor"/>
-                  <path d="M137.117 24.1287V8.06312H139.678V18.6658V24.1287H137.117ZM139.678 18.6658L145.094 12.4958H148.199L143.326 17.7836L148.244 24.1287H145.185L141.202 18.6766L139.678 18.6658Z" fill="currentColor"/>
+              <div class="welcome-mark" aria-hidden="true">
+                <svg class="welcome-mark-svg" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M13.2371 21.0407L24.3186 12.8506C24.8619 12.4491 25.6384 12.6057 25.8973 13.2294C27.2597 16.5185 26.651 20.4712 23.9403 23.1851C21.2297 25.8989 17.4581 26.4941 14.0108 25.1386L10.2449 26.8843C15.6463 30.5806 22.2053 29.6665 26.304 25.5601C29.5551 22.3051 30.562 17.8683 29.6205 13.8673L29.629 13.8758C28.2637 7.99809 29.9647 5.64871 33.449 0.844576C33.5314 0.730667 33.6139 0.616757 33.6964 0.5L29.1113 5.09055V5.07631L13.2343 21.0436" fill="currentColor"/>
+                  <path d="M10.9503 23.0313C7.07343 19.3235 7.74185 13.5853 11.0498 10.2763C13.4959 7.82722 17.5036 6.82767 21.0021 8.2971L24.7595 6.55998C24.0826 6.07017 23.215 5.54334 22.2195 5.17313C17.7198 3.31926 12.3326 4.24192 8.67479 7.90126C5.15635 11.4239 4.0499 16.8403 5.94992 21.4622C7.36924 24.9165 5.04257 27.3598 2.69884 29.826C1.86829 30.7002 1.0349 31.5745 0.36364 32.5L10.9474 23.0341" fill="currentColor"/>
                 </svg>
               </div>
-              <h1 id="welcome-title" data-i18n="welcome.title">选择一个项目开始</h1>
+              <h1 id="welcome-title">选择一个项目开始</h1>
               <div class="welcome-stack">
                 <div class="card tip-card hidden" id="sandbox-tip" hidden aria-hidden="true">
                   <div class="tip-left">
@@ -169,7 +169,7 @@
 
                 <div id="goal-banner-welcome" class="goal-banner hidden" aria-live="polite">
                   <div class="goal-banner-main">
-                    <span class="goal-banner-ico" aria-hidden="true">◎</span>
+                    <span class="goal-banner-ico" data-sf="circleDot" aria-hidden="true"></span>
                     <div class="goal-banner-text">
                       <span class="goal-banner-kicker" data-i18n="goal.kicker">进行中的目标</span>
                       <span class="goal-banner-title" data-goal-title></span>
@@ -177,10 +177,10 @@
                     </div>
                   </div>
                   <div class="goal-banner-actions">
-                    <button type="button" class="goal-banner-btn" data-goal-act="edit" data-i18n-title="goal.edit" title="编辑目标">✎</button>
-                    <button type="button" class="goal-banner-btn" data-goal-act="pause" data-i18n-title="goal.pause" title="暂停目标" data-goal-pause>⏸</button>
-                    <button type="button" class="goal-banner-btn hidden" data-goal-act="resume" data-i18n-title="goal.resume" title="恢复目标" data-goal-resume>▶</button>
-                    <button type="button" class="goal-banner-btn" data-goal-act="clear" data-i18n-title="goal.clear" title="清除目标">🗑</button>
+                    <button type="button" class="goal-banner-btn" data-goal-act="edit" data-i18n-title="goal.edit" title="编辑目标"><span data-sf="compose" data-sf-size="14"></span></button>
+                    <button type="button" class="goal-banner-btn" data-goal-act="pause" data-i18n-title="goal.pause" title="暂停目标" data-goal-pause><span data-sf="pause" data-sf-size="14"></span></button>
+                    <button type="button" class="goal-banner-btn hidden" data-goal-act="resume" data-i18n-title="goal.resume" title="恢复目标" data-goal-resume><span data-sf="play" data-sf-size="14"></span></button>
+                    <button type="button" class="goal-banner-btn" data-goal-act="clear" data-i18n-title="goal.clear" title="清除目标"><span data-sf="trash" data-sf-size="14"></span></button>
                   </div>
                 </div>
                 <div id="prompt-queue-bar-welcome" class="prompt-queue-bar hidden" aria-live="polite"></div>
@@ -193,60 +193,29 @@
                   ></textarea>
                   <div class="composer-toolbar">
                     <div class="composer-left">
-                      <button type="button" class="icon-ghost sm" id="btn-attach" data-i18n-title="composer.attach" title="添加" aria-haspopup="menu">+</button>
-                      <button type="button" class="icon-ghost sm" id="btn-slash" data-i18n-title="composer.slash" title="命令 /（Ctrl+/）">/</button>
+                      <button type="button" class="icon-ghost sm" id="btn-attach" data-i18n-title="composer.attach" title="添加" aria-haspopup="menu"><span data-sf="plus" data-sf-class="sf-ico sf-ico--tool" data-sf-size="16"></span></button>
+                      <button type="button" class="icon-ghost sm composer-slash-btn" id="btn-slash" data-i18n-title="composer.slash" title="命令 /（Ctrl+/）"><span data-sf="slash" data-sf-class="sf-ico sf-ico--tool" data-sf-size="15"></span></button>
                       <button type="button" class="mode-chip" id="btn-perm-mode">
-                        <span class="mode-dot">◎</span>
-                        <span id="perm-label" data-i18n="composer.permFull">完全访问</span> ▾
+                        <span class="mode-dot" data-sf="circleDot" data-sf-size="12"></span>
+                        <span id="perm-label" data-i18n="composer.permFull">完全访问</span>
                       </button>
                       <span class="session-mode-chip hidden is-plan" id="chip-plan" data-i18n-title="composer.planOn" title="计划模式已开启">
-                        <span class="session-mode-ico">≡</span>
+                        <span class="session-mode-ico" data-sf="list" data-sf-size="12"></span>
                         <span class="session-mode-label" data-i18n="composer.plan">计划</span>
-                        <button type="button" class="session-mode-x" data-chip-close="plan" data-i18n-title="composer.planClose" title="关闭计划模式" data-i18n-aria-label="composer.planClose" aria-label="关闭计划模式">×</button>
+                        <button type="button" class="session-mode-x" data-chip-close="plan" data-i18n-title="composer.planClose" title="关闭计划模式" data-i18n-aria-label="composer.planClose" aria-label="关闭计划模式"><span data-sf="xmark" data-sf-size="11"></span></button>
                       </span>
                       <span class="session-mode-chip hidden is-goal" id="chip-goal" data-i18n-title="composer.goal" title="目标">
-                        <span class="session-mode-ico">◎</span>
+                        <span class="session-mode-ico" data-sf="circleDot" data-sf-size="12"></span>
                         <span class="session-mode-label" data-i18n="composer.goal">目标</span>
-                        <button type="button" class="session-mode-x" data-chip-close="goal" data-i18n-title="composer.goalClear" title="清除目标" data-i18n-aria-label="composer.goalClear" aria-label="清除目标">×</button>
+                        <button type="button" class="session-mode-x" data-chip-close="goal" data-i18n-title="composer.goalClear" title="清除目标" data-i18n-aria-label="composer.goalClear" aria-label="清除目标"><span data-sf="xmark" data-sf-size="11"></span></button>
                       </span>
                     </div>
                     <div class="composer-right">
                       <button type="button" class="model-chip" id="btn-model" data-i18n-title="composer.model" title="模型与推理力度">
                         <span class="model-chip-text" id="model-label">grok</span>
-                        <span aria-hidden="true">▾</span>
                       </button>
-                      <button type="button" class="send-btn" id="btn-send" data-i18n-title="composer.send" title="发送">↑</button>
+                      <button type="button" class="send-btn" id="btn-send" data-i18n-title="composer.send" title="发送"><span data-sf="send" data-sf-size="14"></span></button>
                     </div>
-                  </div>
-                </div>
-
-                <div class="project-chip-wrap">
-                  <button type="button" class="project-chip" id="btn-project-chip" aria-haspopup="listbox" aria-expanded="false">
-                    <span class="folder-ico">📁</span>
-                    <span id="project-chip-label" data-i18n="composer.pickProject">选择项目</span>
-                    <span class="chip-caret">▾</span>
-                  </button>
-                  <div id="project-picker" class="project-picker hidden" role="listbox">
-                    <div class="project-picker-search">
-                      <span class="picker-search-ico">⌕</span>
-                      <input
-                        id="project-picker-q"
-                        type="search"
-                        data-i18n-placeholder="composer.searchProjects" placeholder="搜索项目"
-                        autocomplete="off"
-                      />
-                    </div>
-                    <div id="project-picker-list" class="project-picker-list"></div>
-                    <div class="project-picker-divider"></div>
-                    <button type="button" class="picker-action" id="picker-add-project">
-                      <span class="picker-action-ico">📁+</span>
-                      <span data-i18n="composer.addNewProject">添加新项目</span>
-                      <span class="picker-action-chev">›</span>
-                    </button>
-                    <button type="button" class="picker-action" id="picker-no-project">
-                      <span class="picker-action-ico">⊘</span>
-                      <span data-i18n="composer.noProject">不使用项目</span>
-                    </button>
                   </div>
                 </div>
               </div>
@@ -268,15 +237,15 @@
                 <div id="transcript" class="transcript"></div>
                 <div class="chat-scroll-spacer" id="chat-scroll-spacer" aria-hidden="true"></div>
               </div>
+              <!-- 权限卡放在 dock 外：避免 dock overflow 裁掉圆角头部 -->
+              <div id="permission-bar" class="permission-bar hidden"></div>
               <div class="chat-composer-dock" id="chat-composer-dock">
-                <button type="button" class="chat-scroll-fab hidden" id="btn-scroll-down" data-i18n-title="composer.scrollLatest" title="滚到最新">↓</button>
-                <!-- 权限条贴输入上方，始终可点，不随消息滚走 -->
-                <div id="permission-bar" class="permission-bar hidden"></div>
+                <button type="button" class="chat-scroll-fab hidden" id="btn-scroll-down" data-i18n-title="composer.scrollLatest" title="滚到最新"><span data-sf="arrowDown" data-sf-size="14"></span></button>
                 <div id="prompt-queue-bar" class="prompt-queue-bar hidden" aria-live="polite"></div>
                 <div class="chat-composer-wrap">
                   <div id="goal-banner-chat" class="goal-banner hidden" aria-live="polite">
                     <div class="goal-banner-main">
-                      <span class="goal-banner-ico" aria-hidden="true">◎</span>
+                      <span class="goal-banner-ico" data-sf="circleDot" aria-hidden="true"></span>
                       <div class="goal-banner-text">
                         <span class="goal-banner-kicker" data-i18n="goal.kicker">进行中的目标</span>
                         <span class="goal-banner-title" data-goal-title></span>
@@ -284,10 +253,10 @@
                       </div>
                     </div>
                     <div class="goal-banner-actions">
-                      <button type="button" class="goal-banner-btn" data-goal-act="edit" data-i18n-title="goal.edit" title="编辑目标">✎</button>
-                      <button type="button" class="goal-banner-btn" data-goal-act="pause" data-i18n-title="goal.pause" title="暂停目标" data-goal-pause>⏸</button>
-                      <button type="button" class="goal-banner-btn hidden" data-goal-act="resume" data-i18n-title="goal.resume" title="恢复目标" data-goal-resume>▶</button>
-                      <button type="button" class="goal-banner-btn" data-goal-act="clear" data-i18n-title="goal.clear" title="清除目标">🗑</button>
+                      <button type="button" class="goal-banner-btn" data-goal-act="edit" data-i18n-title="goal.edit" title="编辑目标"><span data-sf="compose" data-sf-size="14"></span></button>
+                      <button type="button" class="goal-banner-btn" data-goal-act="pause" data-i18n-title="goal.pause" title="暂停目标" data-goal-pause><span data-sf="pause" data-sf-size="14"></span></button>
+                      <button type="button" class="goal-banner-btn hidden" data-goal-act="resume" data-i18n-title="goal.resume" title="恢复目标" data-goal-resume><span data-sf="play" data-sf-size="14"></span></button>
+                      <button type="button" class="goal-banner-btn" data-goal-act="clear" data-i18n-title="goal.clear" title="清除目标"><span data-sf="trash" data-sf-size="14"></span></button>
                     </div>
                   </div>
                   <div class="composer-card compact">
@@ -295,28 +264,28 @@
                     <textarea id="chat-input" rows="2" data-i18n-placeholder="composer.placeholderChat" placeholder="继续对话…"></textarea>
                     <div class="composer-toolbar">
                       <div class="composer-left">
-                        <button type="button" class="icon-ghost sm" id="btn-attach-chat" data-i18n-title="composer.attach" title="添加" aria-haspopup="menu">+</button>
-                        <button type="button" class="icon-ghost sm" id="btn-slash-chat" data-i18n-title="composer.slash" title="命令 /（Ctrl+/）">/</button>
+                        <button type="button" class="icon-ghost sm" id="btn-attach-chat" data-i18n-title="composer.attach" title="添加" aria-haspopup="menu"><span data-sf="plus" data-sf-class="sf-ico sf-ico--tool" data-sf-size="16"></span></button>
+                        <button type="button" class="icon-ghost sm composer-slash-btn" id="btn-slash-chat" data-i18n-title="composer.slash" title="命令 /（Ctrl+/）"><span data-sf="slash" data-sf-class="sf-ico sf-ico--tool" data-sf-size="15"></span></button>
                         <button type="button" class="mode-chip" id="btn-perm-mode-2">
-                          <span id="perm-label-2" data-i18n="composer.permFull">完全访问</span> ▾
+                          <span class="mode-dot" data-sf="circleDot" data-sf-size="12"></span>
+                          <span id="perm-label-2" data-i18n="composer.permFull">完全访问</span>
                         </button>
                         <span class="session-mode-chip hidden is-plan" id="chip-plan-2" data-i18n-title="composer.planOn" title="计划模式已开启">
-                          <span class="session-mode-ico">≡</span>
+                          <span class="session-mode-ico" data-sf="list" data-sf-size="12"></span>
                           <span class="session-mode-label" data-i18n="composer.plan">计划</span>
-                          <button type="button" class="session-mode-x" data-chip-close="plan" data-i18n-title="composer.planClose" title="关闭计划模式" data-i18n-aria-label="composer.planClose" aria-label="关闭计划模式">×</button>
+                          <button type="button" class="session-mode-x" data-chip-close="plan" data-i18n-title="composer.planClose" title="关闭计划模式" data-i18n-aria-label="composer.planClose" aria-label="关闭计划模式"><span data-sf="xmark" data-sf-size="11"></span></button>
                         </span>
                         <span class="session-mode-chip hidden is-goal" id="chip-goal-2" data-i18n-title="composer.goal" title="目标">
-                          <span class="session-mode-ico">◎</span>
+                          <span class="session-mode-ico" data-sf="circleDot" data-sf-size="12"></span>
                           <span class="session-mode-label" data-i18n="composer.goal">目标</span>
-                          <button type="button" class="session-mode-x" data-chip-close="goal" data-i18n-title="composer.goalClear" title="清除目标" data-i18n-aria-label="composer.goalClear" aria-label="清除目标">×</button>
+                          <button type="button" class="session-mode-x" data-chip-close="goal" data-i18n-title="composer.goalClear" title="清除目标" data-i18n-aria-label="composer.goalClear" aria-label="清除目标"><span data-sf="xmark" data-sf-size="11"></span></button>
                         </span>
                       </div>
                       <div class="composer-right">
                         <button type="button" class="model-chip" id="btn-model-2" data-i18n-title="composer.model" title="模型与推理力度">
                           <span class="model-chip-text" id="model-label-2">grok</span>
-                          <span aria-hidden="true">▾</span>
                         </button>
-                        <button type="button" class="send-btn" id="btn-send-chat">↑</button>
+                        <button type="button" class="send-btn" id="btn-send-chat"><span data-sf="send" data-sf-size="14"></span></button>
                       </div>
                     </div>
                   </div>
@@ -376,7 +345,7 @@
                   <!-- 右：筛选 + 文件树（对齐 Codex） -->
                   <div class="side-files-tree-col" id="side-files-tree-col">
                     <div class="file-tree-search">
-                      <span class="file-tree-search-ico">⌕</span>
+                      <span class="file-tree-search-ico" data-sf="search" data-sf-size="14"></span>
                       <input
                         id="file-tree-q"
                         type="search"
@@ -509,13 +478,13 @@
         <!-- 全屏文件模式底部悬浮输入（对齐 Codex） -->
         <div id="focus-composer" class="focus-composer hidden">
           <div class="focus-composer-card">
-            <button type="button" class="icon-ghost sm" id="btn-focus-attach" data-i18n-title="focus.attach" title="附件">+</button>
+            <button type="button" class="icon-ghost sm" id="btn-focus-attach" data-i18n-title="focus.attach" title="附件"><span data-sf="plus" data-sf-class="sf-ico sf-ico--tool" data-sf-size="15"></span></button>
             <textarea
               id="focus-input"
               rows="1"
               data-i18n-placeholder="composer.placeholder" placeholder="随心输入"
             ></textarea>
-            <button type="button" class="send-btn" id="btn-focus-send" data-i18n-title="composer.send" title="发送">↑</button>
+            <button type="button" class="send-btn" id="btn-focus-send" data-i18n-title="composer.send" title="发送"><span data-sf="send" data-sf-size="14"></span></button>
           </div>
         </div>
       </main>
@@ -525,7 +494,7 @@
       <div class="modal-card">
         <header class="modal-head">
           <h2 id="modal-title" data-i18n="common.panel">面板</h2>
-          <button type="button" class="icon-ghost" id="btn-modal-close">✕</button>
+          <button type="button" class="icon-ghost" id="btn-modal-close"><span data-sf="xmark" data-sf-size="14"></span></button>
         </header>
         <div id="modal-body" class="modal-body"></div>
       </div>
@@ -536,31 +505,41 @@
       <button type="button" data-mode="normal" class="menu-item" data-i18n="composer.permDefaultMenu">默认（需确认）</button>
     </div>
 
+    <!-- 权限卡「允许一次」▾ 二级选项 -->
+    <div id="perm-allow-menu" class="float-menu hidden" role="menu">
+      <button type="button" class="menu-item" data-perm-decision="allow_once" role="menuitem" data-i18n="perm.allowOnce">允许一次</button>
+      <button type="button" class="menu-item" data-perm-decision="allow_session" role="menuitem" data-i18n="perm.allowSession">本次会话允许</button>
+      <button type="button" class="menu-item" data-perm-decision="allow_always" role="menuitem" data-i18n="perm.allowAlways">始终允许</button>
+    </div>
+
     <!-- Codex 式：推理力度 + 模型 -->
     <div id="model-menu" class="model-menu hidden" role="menu" data-i18n-aria-label="menu.modelAria" aria-label="模型与推理"></div>
 
-    <!-- Codex 式 + 菜单：附件 / 计划 / 目标 -->
+    <!-- Codex 式 + 菜单：附件 / 计划 / 目标（简洁行 + 悬停说明） -->
     <div id="plus-menu" class="float-menu plus-menu hidden" role="menu" data-i18n-aria-label="menu.plusAria" aria-label="添加">
       <button type="button" class="menu-item plus-item" data-plus="files" role="menuitem">
-        <span class="plus-item-ico">📎</span>
-        <span class="plus-item-text">
-          <span class="plus-item-title" data-i18n="menu.addFiles">添加文件或图片</span>
-          <span class="plus-item-sub" data-i18n="menu.addFilesSub">加入本条消息上下文</span>
+        <span class="plus-item-ico" data-sf="paperclip"></span>
+        <span class="plus-item-title" data-i18n="menu.addFiles">添加文件或图片</span>
+        <span class="plus-item-flyout" role="tooltip">
+          <span class="plus-flyout-title" data-i18n="menu.addFiles">添加文件或图片</span>
+          <span class="plus-flyout-desc" data-i18n="menu.addFilesSub">加入本条消息上下文</span>
         </span>
       </button>
       <div class="plus-menu-divider"></div>
       <button type="button" class="menu-item plus-item" data-plus="goal" role="menuitem">
-        <span class="plus-item-ico">◎</span>
-        <span class="plus-item-text">
-          <span class="plus-item-title" data-i18n="menu.goal">目标</span>
-          <span class="plus-item-sub" data-i18n="menu.goalSub">设置持续推进的目标 · /goal</span>
+        <span class="plus-item-ico" data-sf="circleDot"></span>
+        <span class="plus-item-title" data-i18n="menu.goal">目标</span>
+        <span class="plus-item-flyout" role="tooltip">
+          <span class="plus-flyout-title" data-i18n="menu.goal">目标</span>
+          <span class="plus-flyout-desc" data-i18n="menu.goalSub">设置持续推进的目标 · /goal</span>
         </span>
       </button>
       <button type="button" class="menu-item plus-item" data-plus="plan" role="menuitem">
-        <span class="plus-item-ico">≡</span>
-        <span class="plus-item-text">
-          <span class="plus-item-title" data-i18n="menu.plan">计划模式</span>
-          <span class="plus-item-sub" data-i18n="menu.planSub">开启 Plan · /plan</span>
+        <span class="plus-item-ico" data-sf="list"></span>
+        <span class="plus-item-title" data-i18n="menu.plan">计划模式</span>
+        <span class="plus-item-flyout" role="tooltip">
+          <span class="plus-flyout-title" data-i18n="menu.plan">计划模式</span>
+          <span class="plus-flyout-desc" data-i18n="menu.planSub">开启 Plan · /plan</span>
         </span>
       </button>
     </div>
@@ -584,7 +563,7 @@
             <h1 class="plugins-title" id="plugins-title" data-i18n="plugins.title">插件</h1>
             <div class="plugins-toolbar">
               <div class="plugins-search-wrap">
-                <span class="plugins-search-ico">⌕</span>
+                <span class="plugins-search-ico" data-sf="search" data-sf-size="14"></span>
                 <input id="plugins-search" type="search" data-i18n-placeholder="plugins.search" placeholder="搜索插件…" autocomplete="off" />
               </div>
             </div>
@@ -608,7 +587,7 @@
           <span class="settings-back-ico">←</span> <span data-i18n="settings.back">返回应用</span>
         </button>
         <div class="settings-search-wrap">
-          <span class="settings-search-ico">⌕</span>
+          <span class="settings-search-ico" data-sf="search" data-sf-size="14"></span>
           <input
             id="settings-search"
             type="search"

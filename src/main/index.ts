@@ -14,6 +14,7 @@ import {
   clipboard,
 } from "electron";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DesktopHost } from "../host/host.js";
@@ -25,6 +26,17 @@ import { HostError, isHostError } from "../shared/errors.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** 应用根（dist/main → ../.. = 项目根） */
 const APP_ROOT = path.resolve(__dirname, "../..");
+
+// 开发态必须与安装包隔离 Chromium userData，否则会抢 Session Storage / 锁导致一方退出
+if (!app.isPackaged) {
+  const devUserData = path.join(os.homedir(), ".grok-desktop", "electron-dev");
+  try {
+    fs.mkdirSync(devUserData, { recursive: true });
+  } catch {
+    /* ignore */
+  }
+  app.setPath("userData", devUserData);
+}
 
 function resolveDesktopAgentPaths(): {
   bundledPath: string | null;
@@ -49,6 +61,148 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let trayTimer: ReturnType<typeof setInterval> | null = null;
 let isQuitting = false;
+
+/** macOS 需要标准应用菜单，否则 Cmd+C / Cmd+V / Cmd+Q 等会失效 */
+function installApplicationMenu(): void {
+  if (process.platform !== "darwin") {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/** 按平台配置标题栏 / 玻璃窗口：Win 用 overlay；macOS 透明壳 + Liquid Glass */
+function platformTitleBarOptions(): Electron.BrowserWindowConstructorOptions {
+  if (process.platform === "win32") {
+    return {
+      titleBarStyle: "hidden",
+      titleBarOverlay: {
+        color: "#ebebef",
+        symbolColor: "#1c1c1e",
+        height: 36,
+      },
+    };
+  }
+  if (process.platform === "darwin") {
+    return {
+      titleBarStyle: "hiddenInset",
+      trafficLightPosition: { x: 16, y: 14 },
+      // Liquid Glass 需要透明客户区；成功前不要设 vibrancy（会盖掉玻璃）
+      transparent: true,
+      backgroundColor: "#00000000",
+      visualEffectState: "active",
+      roundedCorners: true,
+      hasShadow: true,
+    };
+  }
+  return {};
+}
+
+/** macOS 26/27：原生 NSGlassEffectView；失败则退回 under-window vibrancy */
+async function applyMacGlassEffect(win: BrowserWindow): Promise<void> {
+  if (process.platform !== "darwin" || win.isDestroyed()) return;
+
+  const markRenderer = (mode: "native" | "vibrancy" | "none") => {
+    if (win.isDestroyed()) return;
+    const cls =
+      mode === "native"
+        ? "glass-native"
+        : mode === "vibrancy"
+          ? "glass-vibrancy"
+          : "";
+    void win.webContents
+      .executeJavaScript(
+        `(() => {
+          document.body.classList.remove('glass-native','glass-vibrancy');
+          if (${JSON.stringify(cls)}) document.body.classList.add(${JSON.stringify(cls)});
+          document.documentElement.dataset.glass = ${JSON.stringify(mode)};
+        })()`,
+      )
+      .catch(() => {
+        /* ignore */
+      });
+  };
+
+  try {
+    const mod = await import("electron-liquid-glass");
+    const liquidGlass = mod.default;
+    try {
+      win.setWindowButtonVisibility(true);
+    } catch {
+      /* ignore */
+    }
+
+    const apply = () => {
+      if (win.isDestroyed()) return;
+      try {
+        const id = liquidGlass.addView(win.getNativeWindowHandle(), {
+          cornerRadius: 18,
+          tintColor: "#E8E8ED",
+        });
+        if (id >= 0) {
+          const variants = liquidGlass.GlassMaterialVariant;
+          // sidebar 材质更接近 Codex 壳层；不支持时 library 内部会兜底
+          liquidGlass.unstable_setVariant(id, variants.sidebar);
+          try {
+            liquidGlass.unstable_setScrim(id, 1);
+          } catch {
+            /* optional */
+          }
+          markRenderer(
+            liquidGlass.isGlassSupported() ? "native" : "vibrancy",
+          );
+          console.log(
+            `[grok-desktop] mac glass applied id=${id} liquid=${liquidGlass.isGlassSupported()}`,
+          );
+          return;
+        }
+      } catch (err) {
+        console.warn("[grok-desktop] liquid glass addView failed:", err);
+      }
+      try {
+        win.setVibrancy("under-window");
+        markRenderer("vibrancy");
+        console.log("[grok-desktop] mac glass fallback: vibrancy under-window");
+      } catch (err) {
+        console.warn("[grok-desktop] vibrancy fallback failed:", err);
+        markRenderer("none");
+      }
+    };
+
+    if (win.webContents.isLoadingMainFrame()) {
+      win.webContents.once("did-finish-load", apply);
+    } else {
+      apply();
+    }
+  } catch (err) {
+    console.warn("[grok-desktop] electron-liquid-glass unavailable:", err);
+    try {
+      win.setVibrancy("under-window");
+      markRenderer("vibrancy");
+    } catch {
+      markRenderer("none");
+    }
+  }
+}
 
 function resultOk<T>(data: T) {
   return { ok: true as const, data };
@@ -430,8 +584,12 @@ async function handleHostIpc(
       await host.turnsPrompt(p.threadId as string, p.content as string);
       return resultOk({ sent: true });
     case "turns.cancel":
-      await host.turnsCancel(p.threadId as string);
-      return resultOk({ cancelled: true });
+      return resultOk(
+        await host.turnsCancelActive({
+          threadId: p.threadId as string | undefined,
+          sessionId: p.sessionId as string | undefined,
+        }),
+      );
     case "permissions.respond":
       host.permissionsRespond(p.requestId as string, p.decision as never);
       return resultOk({ responded: true });
@@ -729,29 +887,19 @@ async function createWindow(): Promise<void> {
   // package.json "type":"module" and leaves window.grokDesktop undefined.
   const preloadPath = path.join(__dirname, "preload.cjs");
   const appIcon = loadAppIcon();
-  // Windows：隐藏标题栏图标+文字，保留顶部占位与系统按钮（布局不挤进客户区）
-  const winTitleBar =
-    process.platform === "win32"
-      ? {
-          titleBarStyle: "hidden" as const,
-          titleBarOverlay: {
-            color: "#f5f5f5",
-            symbolColor: "#1a1a1a",
-            height: 36,
-          },
-        }
-      : {};
+  const isMac = process.platform === "darwin";
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 720,
     minHeight: 480,
     title: "Grok Desktop",
-    backgroundColor: "#f5f5f5",
+    backgroundColor: isMac ? "#00000000" : "#ebebef",
+    show: false,
     ...(appIcon ? { icon: appIcon } : {}),
-    ...winTitleBar,
-    // 对齐 Codex：无原生 File/Edit/View 菜单栏
-    autoHideMenuBar: true,
+    ...platformTitleBarOptions(),
+    // Windows/Linux：隐藏窗口内菜单栏；macOS 用系统菜单栏
+    autoHideMenuBar: !isMac,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -761,9 +909,13 @@ async function createWindow(): Promise<void> {
     },
   });
 
-  // Windows 彻底去掉菜单栏；macOS 仍可保留空应用菜单由系统接管时再扩展
-  Menu.setApplicationMenu(null);
-  mainWindow.setMenuBarVisibility(false);
+  installApplicationMenu();
+  if (!isMac) {
+    mainWindow.setMenuBarVisibility(false);
+  }
+  if (isMac) {
+    void applyMacGlassEffect(mainWindow);
+  }
 
   // 外链：禁止应用内开窗/导航（避免 MD 链接 target=_blank 黑屏），改系统浏览器
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -824,6 +976,11 @@ async function createWindow(): Promise<void> {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+  });
+
+  mainWindow.once("ready-to-show", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.show();
   });
 
   await mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
@@ -925,14 +1082,17 @@ app.whenReady().then(async () => {
   host = new DesktopHost({
     bundledPath: agentPaths.bundledPath,
     grokPath: agentPaths.grokPath,
+    instance: app.isPackaged ? "app" : "dev",
   });
   const info = host.grokInfo();
   console.log(
     `[grok-desktop] agent source=${info.source} path=${info.path ?? "(missing)"} version=${info.version ?? "?"}`,
   );
   if (!info.path) {
+    const hint =
+      process.platform === "win32" ? "agent-bin/grok.exe" : "agent-bin/grok";
     console.warn(
-      "[grok-desktop] grok binary not found. Place agent-bin/grok.exe or: npm run sync:agent",
+      `[grok-desktop] grok binary not found. Place ${hint} or: npm run sync:agent`,
     );
   }
   const si = await host.initSingleInstance();
@@ -943,7 +1103,9 @@ app.whenReady().then(async () => {
       ) ?? "grok://focus";
     await host.shellNotifyPrimary(deep);
     console.log(
-      "Grok Desktop already running; handoff sent, exiting secondary",
+      app.isPackaged
+        ? "Grok Desktop already running; handoff sent, exiting secondary"
+        : "Grok Desktop (dev) already running; handoff sent, exiting secondary",
     );
     app.quit();
     return;

@@ -18,6 +18,7 @@
   <img alt="UX" src="https://img.shields.io/badge/UX-Codex--aligned-8B5CF6.svg" />
   <img alt="Providers" src="https://img.shields.io/badge/providers-official%20%2B%20relay-success.svg" />
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
+  <img alt="Platform" src="https://img.shields.io/badge/macOS-arm64%20%2F%20x64-000000.svg" />
   <img alt="Platform" src="https://img.shields.io/badge/Windows-x64-0078D4.svg" />
 </p>
 
@@ -27,12 +28,26 @@
 
 ## Install & get started
 
-1. Open [Releases](https://github.com/fanghui-li/Grok-Desktop/releases) and download **`Grok Desktop-*-win-x64.exe`**
-2. Install and launch
+### Installer (recommended)
+
+1. Open [Releases](https://github.com/fanghui-li/Grok-Desktop/releases) and download for your OS:
+   - **macOS**: `Grok Desktop-*-mac-arm64.dmg` or `…-mac-x64.dmg` (match your chip)
+   - **Windows**: `Grok Desktop-*-win-x64.exe`
+2. Install and launch (macOS unsigned build: right-click → Open → Open anyway)
 3. **Settings → Account & providers**  
    - **Official account**: sign in with xAI / Grok  
    - **Custom provider**: OpenAI-compatible relay (Base URL, API key, model, …)
 4. Add or pick a project and start chatting  
+
+### Run from source (macOS / Windows / Linux)
+
+```bash
+# Requires Grok CLI: https://x.ai/cli
+npm install
+npm run sync:agent   # copy local grok → agent-bin/
+npm start            # build + Electron
+# macOS package: npm run dist:mac
+```
 
 Installers can bundle the agent so you can use the app right away. User data lives under **`~/.grok-desktop`**, separate from the CLI’s `~/.grok`.
 

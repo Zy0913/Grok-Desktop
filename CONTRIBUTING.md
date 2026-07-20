@@ -5,8 +5,8 @@
 ## 环境
 
 - Node.js **≥ 20**
-- Windows 为主开发/打包平台；macOS/Linux 可源码运行，发行包以 Win 为主
-- 本地需能拿到 `grok` 二进制（CLI 安装或手动拷贝）
+- **macOS / Windows / Linux** 均可源码运行；安装包需与本机同架构的 `grok` 二进制
+- 本地需能拿到 `grok` 二进制（[官方 CLI](https://x.ai/cli) 安装或手动拷贝）
 
 ## 快速开始
 
@@ -15,6 +15,13 @@ npm install
 npm run sync:agent    # 同步 agent 到 agent-bin/ 并写 VERSION.txt
 npm test
 npm start             # build + Electron
+```
+
+macOS 打包（在本机 arch 上构建，agent-bin 须为同架构）：
+
+```bash
+npm run dist:mac      # 产出 DMG
+npm run dist:mac:dir  # 仅解包目录，便于本地验证
 ```
 
 仅测 Host（无 UI）：
@@ -34,6 +41,8 @@ npm run dev
 | `npm run sync:agent` | 复制二进制并写 `agent-bin/VERSION.txt` |
 | `npm run check:agent` | 打包前检查 agent 是否存在且体积合理 |
 | `npm run dist:win` | 构建并打 Windows 安装包（含 check） |
+| `npm run dist:mac` | 构建并打 macOS DMG（含 check；须本机 arch 的 agent） |
+| `npm run dist:mac:dir` | 构建 macOS 解包目录（更快验证） |
 
 ## 分支（方案 A / GitHub Flow）
 

@@ -15,6 +15,111 @@ interface Pending {
   reject: (err: Error) => void;
 }
 
+/** ACP PermissionOption：kind 用 underscore，optionId 多为 hyphen（allow-once） */
+type PermissionOption = {
+  optionId: string;
+  name?: string;
+  kind?: string;
+};
+
+function normalizePermKey(s: string): string {
+  return s.trim().toLowerCase().replace(/-/g, "_");
+}
+
+function parsePermissionOptions(
+  params: Record<string, unknown>,
+): PermissionOption[] {
+  const raw = params.options;
+  if (!Array.isArray(raw)) return [];
+  const out: PermissionOption[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const optionId = String(o.optionId ?? o.option_id ?? "").trim();
+    if (!optionId) continue;
+    out.push({
+      optionId,
+      name: typeof o.name === "string" ? o.name : undefined,
+      kind: typeof o.kind === "string" ? o.kind : undefined,
+    });
+  }
+  return out;
+}
+
+/**
+ * UI decision → agent 请求里真实的 optionId。
+ * ACP：kind 为 allow_once / reject_once；optionId 常为 allow-once / reject-once。
+ * 不可回传自造的 allow_once（underscore）——真实 grok agent 会当成 unknown → 整轮取消。
+ */
+export function mapPermissionDecisionToOptionId(
+  decision: "allow_once" | "allow_session" | "allow_always" | "deny",
+  options: PermissionOption[],
+): string {
+  const byKind = (...kinds: string[]): string | undefined => {
+    const want = new Set(kinds.map(normalizePermKey));
+    return options.find((o) => o.kind && want.has(normalizePermKey(o.kind)))
+      ?.optionId;
+  };
+  const byId = (...ids: string[]): string | undefined => {
+    const want = new Set(ids.map(normalizePermKey));
+    return options.find((o) => want.has(normalizePermKey(o.optionId)))
+      ?.optionId;
+  };
+
+  if (decision === "deny") {
+    return (
+      byKind("reject_once", "reject_always") ??
+      byId("reject-once", "reject_once", "reject", "reject-always", "deny") ??
+      options.find((o) => /reject|deny/i.test(o.optionId))?.optionId ??
+      "reject-once"
+    );
+  }
+  // allow_once 兜底：只从 agent 下发的 options 里挑，绝不自造 optionId
+  const allowOnceFallback = (): string =>
+    byKind("allow_once") ??
+    byId("allow-once", "allow_once") ??
+    options.find((o) => /^allow/i.test(o.optionId) && !/always|session/i.test(o.optionId))
+      ?.optionId ??
+    options.find((o) => /^allow/i.test(o.optionId))?.optionId ??
+    options[0]?.optionId ??
+    "allow-once";
+
+  if (decision === "allow_always") {
+    // 真实 grok 常用 allow-always-command / enable-always-approve 等；
+    // 没有 always 类 option 时回退 allow_once，避免 unknown option → 整轮取消
+    return (
+      byKind("allow_always") ??
+      byId(
+        "allow-always",
+        "allow_always",
+        "always-allow",
+        "always_allow",
+        "enable-always-approve",
+        "enable_always_approve",
+        "allow-always-command",
+        "allow_always_command",
+        "allow_always_bash",
+        "allow-always-bash",
+      ) ??
+      options.find((o) => /always/i.test(o.optionId) || /always/i.test(o.kind ?? ""))
+        ?.optionId ??
+      allowOnceFallback()
+    );
+  }
+  if (decision === "allow_session") {
+    return (
+      byId(
+        "allow-session",
+        "allow_session",
+        "allow-edits-session",
+        "allow_edits_session",
+      ) ?? allowOnceFallback()
+    );
+  }
+  // allow_once（默认「允许」）
+  return allowOnceFallback();
+}
+
 export interface AcpClientOptions {
   command: string;
   args: string[];
@@ -40,7 +145,11 @@ export class AcpClient {
   private streamedAssistantThisTurn = false;
   private permissionWaiters = new Map<
     string,
-    { resolve: (optionId: string) => void }
+    {
+      resolve: (optionId: string) => void;
+      /** agent 在 request_permission 里给出的 options（须回传真实 optionId） */
+      options: PermissionOption[];
+    }
   >();
   /** x.ai/exit_plan_mode 审批等待 */
   private planApprovalWaiters = new Map<
@@ -744,14 +853,13 @@ export class AcpClient {
       );
     }
     this.permissionWaiters.delete(requestId);
-    const optionId =
-      decision === "deny"
-        ? "reject"
-        : decision === "allow_always"
-          ? "allow_always"
-          : decision === "allow_session"
-            ? "allow_session"
-            : "allow_once";
+    const optionId = mapPermissionDecisionToOptionId(decision, waiter.options);
+    this.opts.logger?.info("acp.permission_respond", {
+      requestId,
+      decision,
+      optionId,
+      optionCount: waiter.options.length,
+    });
     waiter.resolve(optionId);
   }
 
@@ -1140,6 +1248,7 @@ export class AcpClient {
     const params = (msg.params ?? {}) as Record<string, unknown>;
     const requestId = `perm_${this.opts.threadId}_${String(id)}`;
     const sid = this.sessionId ?? (params.sessionId as string) ?? "unknown";
+    const options = parsePermissionOptions(params);
 
     const toolCall = params.toolCall as Record<string, unknown> | undefined;
     const summary =
@@ -1164,12 +1273,19 @@ export class AcpClient {
     });
 
     const optionId = await new Promise<string>((resolve) => {
-      this.permissionWaiters.set(requestId, { resolve });
+      this.permissionWaiters.set(requestId, { resolve, options });
     });
 
     this.respond(id, {
       outcome: { outcome: "selected", optionId },
       selectedOption: optionId,
+    });
+    // 批准后继续本轮（对齐 exit_plan_mode）
+    this.opts.onEvent({
+      type: "session.status",
+      threadId: this.opts.threadId,
+      sessionId: sid,
+      status: "working",
     });
   }
 

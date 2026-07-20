@@ -18,7 +18,9 @@
     "check:main-clean": "node scripts/check-main-clean.mjs",
     "pack": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --dir",
     "dist": "npm run build && node scripts/check-agent-bin.mjs && electron-builder",
-    "dist:win": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --win"
+    "dist:win": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --win",
+    "dist:mac": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --mac",
+    "dist:mac:dir": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --mac dir"
   },
   "engines": {
     "node": ">=20"
@@ -35,6 +37,7 @@
   },
   "dependencies": {
     "dompurify": "^3.4.12",
+    "electron-liquid-glass": "^1.1.1",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.6"
   },
@@ -65,6 +68,10 @@
       }
     ],
     "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "**/electron-liquid-glass/**"
+    ],
     "win": {
       "target": [
         {
@@ -96,7 +103,11 @@
         "dir"
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
     },
     "linux": {
       "target": [

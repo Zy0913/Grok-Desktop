@@ -3,6 +3,7 @@
  */
 import type { HostIpcMethod } from "../shared/host-api.js";
 import { tr, type LocalePreference } from "../shared/i18n/index.js";
+import { sfIcon, type SfIconName } from "./sf-icons.js";
 
 type Inv = <T>(method: HostIpcMethod, params?: unknown) => Promise<{
   ok: boolean;
@@ -67,7 +68,7 @@ function settingsSections(): Array<{
   id: SectionId;
   group: string;
   label: string;
-  icon: string;
+  icon: SfIconName;
   keywords: string;
 }> {
   return [
@@ -75,35 +76,35 @@ function settingsSections(): Array<{
       id: "general",
       group: tr("settings.group.personal"),
       label: tr("settings.section.general"),
-      icon: "⚙",
+      icon: "settings",
       keywords: tr("settings.kw.general"),
     },
     {
       id: "account",
       group: tr("settings.group.personal"),
       label: tr("settings.section.account"),
-      icon: "👤",
+      icon: "person",
       keywords: tr("settings.kw.account"),
     },
     {
       id: "about",
       group: tr("settings.group.personal"),
       label: tr("settings.section.about"),
-      icon: "ℹ",
+      icon: "circleDot",
       keywords: tr("settings.kw.about"),
     },
     {
       id: "memory",
       group: tr("settings.group.integrations"),
       label: tr("settings.section.memory"),
-      icon: "◎",
+      icon: "archive",
       keywords: tr("settings.kw.memory"),
     },
     {
       id: "shortcuts",
       group: tr("settings.group.personal"),
       label: tr("settings.section.shortcuts"),
-      icon: "⌨",
+      icon: "command",
       keywords: tr("settings.kw.shortcuts"),
     },
   ];
@@ -287,7 +288,7 @@ export class SettingsPageController {
       html += `<div class="settings-nav-group">${this.cb.esc(g)}</div>`;
       for (const s of list) {
         html += `<button type="button" class="settings-nav-item${s.id === this.section ? " active" : ""}" data-section="${s.id}">
-          <span class="settings-nav-ico">${s.icon}</span>
+          <span class="settings-nav-ico">${sfIcon(s.icon, { size: 15, className: "sf-ico sf-ico--tool" })}</span>
           <span>${this.cb.esc(s.label)}</span>
         </button>`;
       }

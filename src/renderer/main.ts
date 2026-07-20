@@ -42,11 +42,14 @@ import {
 } from "./at-file-palette.js";
 import {
   buildToolCardHtml,
+  bindToolCardToggle,
   extractToolMeta,
   updateToolCardDone,
 } from "./agent-blocks.js";
+import { hydrateSfIcons, sfIcon } from "./sf-icons.js";
 
 interface Bridge {
+  platform?: NodeJS.Platform;
   invoke(method: HostIpcMethod, params?: unknown): Promise<unknown>;
   onEvent(handler: (event: unknown) => void): () => void;
 }
@@ -55,6 +58,13 @@ declare global {
   interface Window {
     grokDesktop: Bridge;
   }
+}
+
+/** 给 body 打平台 class，驱动 macOS 标题栏占位等样式 */
+function applyPlatformChrome(): void {
+  const platform = window.grokDesktop?.platform ?? "unknown";
+  document.body.classList.add(`platform-${platform}`);
+  document.documentElement.dataset.platform = platform;
 }
 
 interface HostRes<T> {
@@ -163,6 +173,11 @@ let pendingPlanApproval: {
  * endTurn 后短窗口内仍接受本 turn 的 assistant 流，避免「会话断了、最后一泡没了」。
  */
 let lateStreamUntil = 0;
+/**
+ * 用户点「停止」后压制 agent 输出，直到下一次用户发起 turn。
+ * 否则 cancel 后 thought/tool/turn.started 会 beginTurn，会话「假停真续」。
+ */
+let suppressAgentOutput = false;
 /** 本 turn 内 agent 写入的类 plan 文档路径（非 session plan.md 时兜底展示） */
 let lastPlanArtifactPath: string | null = null;
 /** 计划面板：磁盘已保存内容（用于脏检测） */
@@ -201,6 +216,8 @@ let localePreference: LocalePreference = "system";
 let sidePane: SidePaneController | null = null;
 /** Codex 式全页设置 */
 let settingsPage: SettingsPageController | null = null;
+/** 搜索任务面板快捷键（打开时挂、关闭时卸） */
+let paletteKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 /** Codex 式全页插件 / 技能 */
 let pluginsPage: PluginsPageController | null = null;
 /** 斜杠命令中心 */
@@ -273,76 +290,20 @@ function selectedProject(): Project | undefined {
 }
 
 function setWelcomeTitle(): void {
+  const el = $("welcome-title");
   const p = selectedProject();
-  $("welcome-title").textContent = p
-    ? tr("welcome.askProject", { title: p.title })
-    : tr("welcome.askGeneric");
-  $("project-chip-label").textContent = p?.title ?? tr("picker.usingNone");
-}
-
-function closeProjectPicker(): void {
-  const picker = $("project-picker");
-  const chip = $("btn-project-chip");
-  picker.classList.add("hidden");
-  chip.classList.remove("open");
-  chip.setAttribute("aria-expanded", "false");
-}
-
-function renderProjectPickerList(filter = ""): void {
-  const box = $("project-picker-list");
-  box.innerHTML = "";
-  const q = filter.trim().toLowerCase();
-  const filtered = projects.filter(
-    (p) =>
-      !q ||
-      p.title.toLowerCase().includes(q) ||
-      p.path.toLowerCase().includes(q),
-  );
-  if (!filtered.length) {
-    box.innerHTML = `<div class="picker-empty">${projects.length ? tr("picker.noMatch") : tr("picker.noProjects")}</div>`;
-    return;
+  if (p) {
+    el.replaceChildren();
+    el.appendChild(document.createTextNode(tr("welcome.askProjectBefore")));
+    const name = document.createElement("span");
+    name.className = "welcome-proj-link";
+    name.id = "welcome-proj-link";
+    name.textContent = p.title;
+    el.appendChild(name);
+    el.appendChild(document.createTextNode(tr("welcome.askProjectAfter")));
+  } else {
+    el.textContent = tr("welcome.askGeneric");
   }
-  for (const p of filtered) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = `picker-project${p.id === selectedProjectId ? " selected" : ""}`;
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", p.id === selectedProjectId ? "true" : "false");
-    const check =
-      p.id === selectedProjectId
-        ? `<span class="picker-check">✓</span>`
-        : `<span class="picker-check" style="visibility:hidden">✓</span>`;
-    row.innerHTML = `<span class="picker-folder">📁</span><span class="picker-name">${esc(p.title)}</span>${check}`;
-    row.onclick = () => {
-      selectedProjectId = p.id;
-      projectChoiceTouched = true;
-      closeProjectPicker();
-      setWelcomeTitle();
-      showWelcome(true);
-      void refreshProjectsAndThreads();
-    };
-    box.appendChild(row);
-  }
-}
-
-function openProjectPicker(): void {
-  const picker = $("project-picker");
-  const chip = $("btn-project-chip");
-  const wasOpen = !picker.classList.contains("hidden");
-  if (wasOpen) {
-    closeProjectPicker();
-    return;
-  }
-  // 关闭其它浮层
-  $("perm-menu").classList.add("hidden");
-  renderProjectPickerList("");
-  const q = $("project-picker-q") as HTMLInputElement;
-  q.value = "";
-  picker.classList.remove("hidden");
-  chip.classList.add("open");
-  chip.setAttribute("aria-expanded", "true");
-  // 下一帧聚焦搜索
-  requestAnimationFrame(() => q.focus());
 }
 
 function showWelcome(show: boolean): void {
@@ -461,20 +422,52 @@ function looksLikeGoalProcessText(s: string): boolean {
   return false;
 }
 
+function summarizeProcessActivity(): string {
+  if (!processBodyEl) return tr("process.label");
+  const tools = Array.from(
+    processBodyEl.querySelectorAll(".line.tool"),
+  ) as HTMLElement[];
+  const reasons = processBodyEl.querySelectorAll(
+    ".process-reason, .process-text",
+  ).length;
+  let read = 0;
+  let write = 0;
+  let shell = 0;
+  let search = 0;
+  let other = 0;
+  for (const t of tools) {
+    const k = t.dataset.toolKind || "other";
+    if (k === "read") read += 1;
+    else if (k === "write") write += 1;
+    else if (k === "shell") shell += 1;
+    else if (k === "search") search += 1;
+    else other += 1;
+  }
+  const parts: string[] = [];
+  if (read) parts.push(tr("process.summaryRead"));
+  if (write) parts.push(tr("process.summaryWrite"));
+  if (shell === 1) parts.push(tr("process.summaryShell"));
+  else if (shell > 1) parts.push(tr("process.summaryShells"));
+  if (search) parts.push(tr("process.summarySearch"));
+  if (other && !parts.length) parts.push(tr("process.summaryTools"));
+  if (!parts.length && reasons) return tr("process.summaryReason");
+  if (!parts.length) return tr("process.label");
+  return `${tr("process.summaryExplored")} · ${parts.join(" · ")}`;
+}
+
 function updateProcessHeader(): void {
   if (!processBlockEl) return;
   const label = processBlockEl.querySelector(".process-label");
-  if (label) {
-    // 对齐 Codex：已运行 N 条命令 / 过程摘要
-    label.textContent =
-      processItemCount > 0
-        ? tr("process.expand") + ` · ${processItemCount}`
-        : tr("process.label");
-  }
+  const summary = summarizeProcessActivity();
+  if (label) label.textContent = summary;
   const hint = processBlockEl.querySelector(".process-hint");
   if (hint) {
-    hint.textContent =
-      processItemCount > 0 ? tr("process.expand") : tr("process.expandHint");
+    const collapsed = processBlockEl.classList.contains("collapsed");
+    hint.textContent = collapsed
+      ? processItemCount > 0
+        ? tr("process.expand")
+        : tr("process.expandHint")
+      : "";
   }
 }
 
@@ -510,26 +503,43 @@ function paintProcessElapsedFooter(elapsedMs: number): void {
   processBlockEl.insertAdjacentElement("afterend", foot);
 }
 
+function endProcessStreams(): void {
+  if (!processBodyEl) return;
+  for (const el of Array.from(
+    processBodyEl.querySelectorAll(
+      ".process-reason[data-streaming], .process-text[data-streaming]",
+    ),
+  )) {
+    delete (el as HTMLElement).dataset.streaming;
+  }
+}
+
 function ensureProcessBlock(): { block: HTMLElement; body: HTMLElement } {
   const el = $("transcript");
   if (processBlockEl?.isConnected && processBodyEl?.isConnected) {
     return { block: processBlockEl, body: processBodyEl };
   }
   const block = document.createElement("div");
-  block.className = "line process-block collapsed";
+  // 回合进行中默认展开（对齐 Codex 可见时间线）；结束时再折叠
+  block.className = `line process-block${turnActive ? "" : " collapsed"}`;
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.className = "process-toggle";
-  toggle.innerHTML = `<span class="process-label">${esc(tr("process.label"))}</span><span class="process-hint">${esc(tr("process.expand"))}</span><span class="process-caret">▸</span>`;
+  toggle.innerHTML =
+    `<span class="process-label">${esc(tr("process.label"))}</span>` +
+    `<span class="process-hint">${esc(tr("process.expand"))}</span>` +
+    `<span class="process-caret">${turnActive ? "▾" : "▸"}</span>`;
   const body = document.createElement("div");
   body.className = "process-body";
   toggle.onclick = () => {
     block.classList.toggle("collapsed");
     const c = toggle.querySelector(".process-caret");
     if (c) c.textContent = block.classList.contains("collapsed") ? "▸" : "▾";
+    updateProcessHeader();
   };
   block.appendChild(toggle);
   block.appendChild(body);
+  bindToolCardToggle(body);
   if (turnStatusEl?.isConnected) {
     el.insertBefore(block, turnStatusEl);
   } else {
@@ -545,11 +555,20 @@ function ensureProcessBlock(): { block: HTMLElement; body: HTMLElement } {
 function appendProcessText(text: string): void {
   const t = text.trim();
   if (!t) return;
-  const { body } = ensureProcessBlock();
+  const { body, block } = ensureProcessBlock();
+  if (turnActive) {
+    block.classList.remove("collapsed");
+    const c = block.querySelector(".process-caret");
+    if (c) c.textContent = "▾";
+  }
   const last = body.lastElementChild as HTMLElement | null;
-  if (last?.classList.contains("process-text") && last.dataset.streaming === "1") {
+  if (
+    last?.classList.contains("process-text") &&
+    last.dataset.streaming === "1"
+  ) {
     last.textContent = (last.textContent ?? "") + text;
   } else {
+    endProcessStreams();
     const p = document.createElement("div");
     p.className = "process-text";
     p.dataset.streaming = "1";
@@ -562,15 +581,17 @@ function appendProcessText(text: string): void {
 }
 
 function endProcessTextStream(): void {
-  if (!processBodyEl) return;
-  const last = processBodyEl.lastElementChild as HTMLElement | null;
-  if (last?.classList.contains("process-text")) {
-    delete last.dataset.streaming;
-  }
+  endProcessStreams();
 }
 
 function appendProcessNode(node: HTMLElement): void {
-  const { body } = ensureProcessBlock();
+  const { body, block } = ensureProcessBlock();
+  if (turnActive) {
+    block.classList.remove("collapsed");
+    const c = block.querySelector(".process-caret");
+    if (c) c.textContent = "▾";
+  }
+  endProcessStreams();
   body.appendChild(node);
   processItemCount += 1;
   updateProcessHeader();
@@ -658,12 +679,19 @@ function findDedupeAssistantBubble(
   return null;
 }
 
-/** 流式：只追加纯文本（O(1) DOM 文本更新），不做 MD/高亮 */
+/** 流式：rAF 合并后边输出边渲染 MD（定稿再高亮 + 路径链化） */
 function appendAssistantStream(el: HTMLElement, raw: string): void {
-  paintAssistantStreaming(el, raw);
+  el.dataset.raw = raw;
+  el.dataset.stream = "1";
+  el.classList.add("prose", "streaming");
   if (streamScrollRaf) return;
+  // 首帧立刻画一版，避免等下一帧才出现格式
+  paintAssistantStreaming(el, raw);
   streamScrollRaf = requestAnimationFrame(() => {
     streamScrollRaf = 0;
+    if (!el.isConnected || el.dataset.stream !== "1") return;
+    const latest = el.dataset.raw ?? "";
+    if (latest !== raw) paintAssistantStreaming(el, latest);
     scrollTranscript();
   });
 }
@@ -718,21 +746,27 @@ function syncChatComposerReserve(): void {
   const toolbar = dock.querySelector(".composer-toolbar") as HTMLElement | null;
   const goalH =
     goal && !goal.classList.contains("hidden") ? goal.getBoundingClientRect().height + 6 : 0;
+  // 权限卡已在 dock 外，不再挤 textarea 高度；只计入底部预留
   const permH =
-    perm && !perm.classList.contains("hidden") ? perm.getBoundingClientRect().height + 8 : 0;
+    perm && !perm.classList.contains("hidden")
+      ? Math.ceil(perm.getBoundingClientRect().height)
+      : 0;
   const toolbarH = toolbar?.getBoundingClientRect().height ?? 36;
   const chrome = 28; // dock padding + gaps
   const maxTa = Math.max(
     22,
-    Math.min(120, Math.floor(maxDock - goalH - permH - toolbarH - chrome)),
+    Math.min(120, Math.floor(maxDock - goalH - toolbarH - chrome)),
   );
   if (ta) {
     ta.style.maxHeight = `${maxTa}px`;
     fitChatInputHeight(ta, maxTa);
   }
 
-  const h = Math.ceil(dock.getBoundingClientRect().height);
-  chat.style.setProperty("--chat-composer-h", `${Math.max(h, 72)}px`);
+  const dockH = Math.ceil(dock.getBoundingClientRect().height);
+  chat.style.setProperty(
+    "--chat-composer-h",
+    `${Math.max(dockH + permH, 72)}px`,
+  );
   updateScrollDownFab();
 }
 
@@ -776,6 +810,8 @@ function bindChatScrollLayout(): void {
     const ro = new ResizeObserver(() => syncChatComposerReserve());
     if (dock) ro.observe(dock);
     if (chat) ro.observe(chat);
+    const perm = document.getElementById("permission-bar");
+    if (perm) ro.observe(perm);
   }
   window.addEventListener("resize", () => syncChatComposerReserve());
   // 显示对话 / 目标条 / 权限条显隐时再量一次
@@ -824,10 +860,10 @@ function renderQueueItemRow(q: QueuedPrompt, i: number, total: number): string {
     <span class="prompt-queue-idx">${i + 1}</span>
     <span class="prompt-queue-text" title="${esc(q.display || q.content)}">${esc(short)}</span>
     <span class="prompt-queue-actions">
-      <button type="button" class="prompt-queue-act" data-queue-up="${esc(q.id)}" title="${esc(tr("queue.moveUp"))}"${upDis}>↑</button>
-      <button type="button" class="prompt-queue-act" data-queue-down="${esc(q.id)}" title="${esc(tr("queue.moveDown"))}"${downDis}>↓</button>
-      <button type="button" class="prompt-queue-act" data-queue-edit="${esc(q.id)}" title="${esc(tr("queue.edit"))}">✎</button>
-      <button type="button" class="prompt-queue-x" data-queue-rm="${esc(q.id)}" title="${esc(tr("queue.remove"))}">×</button>
+      <button type="button" class="prompt-queue-act" data-queue-up="${esc(q.id)}" title="${esc(tr("queue.moveUp"))}"${upDis}>${sfIcon("chevronUp", { size: 12, className: "sf-ico sf-ico--sm" })}</button>
+      <button type="button" class="prompt-queue-act" data-queue-down="${esc(q.id)}" title="${esc(tr("queue.moveDown"))}"${downDis}>${sfIcon("arrowDown", { size: 12, className: "sf-ico sf-ico--sm" })}</button>
+      <button type="button" class="prompt-queue-act" data-queue-edit="${esc(q.id)}" title="${esc(tr("queue.edit"))}">${sfIcon("compose", { size: 12, className: "sf-ico sf-ico--sm" })}</button>
+      <button type="button" class="prompt-queue-x" data-queue-rm="${esc(q.id)}" title="${esc(tr("queue.remove"))}">${sfIcon("xmark", { size: 11, className: "sf-ico sf-ico--sm" })}</button>
     </span>
   </li>`;
 }
@@ -1417,12 +1453,22 @@ function applyPromptToComposer(text: string, ta?: HTMLTextAreaElement | null): v
  * ↑/↓ 浏览 prompt 历史。
  * 仅在：slash/@ 未打开、光标在开头（或已在浏览中）时拦截。
  */
+/**
+ * 中文等 IME 组词中：Enter/方向键应交给输入法（选词），不能当发送。
+ * keyCode 229 兼容部分 Chromium 在 composition 时 isComposing 仍为 false 的情况。
+ */
+function isImeComposingKey(e: KeyboardEvent): boolean {
+  return Boolean(e.isComposing || e.keyCode === 229);
+}
+
 function handlePromptHistoryKey(
   ta: HTMLTextAreaElement,
   e: KeyboardEvent,
 ): boolean {
   if (e.ctrlKey || e.altKey || e.metaKey) return false;
   if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return false;
+  // IME 组词中方向键留给输入法
+  if (isImeComposingKey(e)) return false;
   if (slashPalette?.isOpen()) return false;
   // @ 浮层：有则跳过
   const atEl = document.getElementById("at-file-palette");
@@ -1621,6 +1667,7 @@ function setTurnStatus(label: string): void {
 function beginTurn(): void {
   // 先定稿并切断上一 turn 的流式指针，防止新 delta 拼进旧气泡
   resetStreamState(true);
+  suppressAgentOutput = false;
   turnActive = true;
   lateStreamUntil = 0;
   turnStartedAt = Date.now();
@@ -1638,9 +1685,22 @@ function beginTurn(): void {
   if (activeSessionId) markSessionWorking(activeSessionId, true);
 }
 
-function endTurn(opts?: { keepThought?: boolean; skipQueueDrain?: boolean }): void {
-  // 先放行迟到流，再关 busy；不立刻丢弃末包
-  lateStreamUntil = Date.now() + 4000;
+function endTurn(opts?: {
+  keepThought?: boolean;
+  skipQueueDrain?: boolean;
+  /** 用户主动停止：不接受 late stream，并压制后续 agent 事件 */
+  userCancelled?: boolean;
+}): void {
+  if (opts?.userCancelled) {
+    suppressAgentOutput = true;
+    lateStreamUntil = 0;
+    // 切断 streamTurnId，避免迟到 delta 拼回气泡
+    currentTurnId += 1;
+    streamTurnId = -1;
+  } else {
+    // 先放行迟到流，再关 busy；不立刻丢弃末包
+    lateStreamUntil = Date.now() + 4000;
+  }
   turnActive = false;
   removeTurnStatus();
   endProcessTextStream();
@@ -1693,11 +1753,19 @@ function endTurn(opts?: { keepThought?: boolean; skipQueueDrain?: boolean }): vo
 }
 
 async function cancelTurn(opts?: { clearQueue?: boolean }): Promise<void> {
+  // 已压制：再发一次 cancel，避免 agent 仍在跑
+  if (!turnActive && suppressAgentOutput) {
+    await inv("turns.cancel", {
+      threadId:
+        activeThreadId && !activeThreadId.startsWith("disk_")
+          ? activeThreadId
+          : undefined,
+      sessionId: activeSessionId || undefined,
+    });
+    return;
+  }
   if (!turnActive) return;
-  const tid =
-    activeThreadId && !activeThreadId.startsWith("disk_")
-      ? activeThreadId
-      : null;
+
   const shouldPauseGoal = Boolean(currentGoalTitle() && !goalPaused && !goalCompleted);
   // 用户点停止：默认保留队列并暂停自动 drain（对齐 Codex interrupt）；显式 clearQueue 时清空
   if (opts?.clearQueue) {
@@ -1706,17 +1774,20 @@ async function cancelTurn(opts?: { clearQueue?: boolean }): Promise<void> {
     queuePausedByInterrupt = true;
     syncPromptQueueBar();
   }
-  if (tid) {
-    const res = await inv("turns.cancel", { threadId: tid });
-    if (!res.ok) {
-      endTurn();
-      appendLine(res.error?.message ?? tr("turn.stopFailed"), "error");
-      return;
-    }
+  // 先压制 UI，再发 cancel（避免窗口期内事件把 turn 拉起来）
+  endTurn({ skipQueueDrain: true, userCancelled: true });
+  const res = await inv("turns.cancel", {
+    threadId:
+      activeThreadId && !activeThreadId.startsWith("disk_")
+        ? activeThreadId
+        : undefined,
+    sessionId: activeSessionId || undefined,
+  });
+  if (!res.ok) {
+    appendLine(res.error?.message ?? tr("turn.stopFailed"), "error");
   }
-  // endTurn → scheduleDrain；queuePausedByInterrupt 时 schedule 为空操作
-  endTurn();
   appendLine(tr("turn.stopped"), "system");
+  hidePermissionBar();
   // 停止后再同源暂停 goal（避免与 cancel 抢 prompt）
   if (shouldPauseGoal) {
     await pauseGoal({ fromStop: true });
@@ -1724,10 +1795,31 @@ async function cancelTurn(opts?: { clearQueue?: boolean }): Promise<void> {
 }
 
 function appendThoughtDelta(text: string): void {
-  // 产品：会话中不展示思考过程（thought 块 /「思考中」条）
-  // 仍消费事件以免影响流式状态机；仅不渲染 DOM。
-  void text;
-  return;
+  // 对齐 Codex：思考叙事并入过程时间线（展开可见），与工具交错
+  if (!text) return;
+  const { body, block } = ensureProcessBlock();
+  if (turnActive) {
+    block.classList.remove("collapsed");
+    const c = block.querySelector(".process-caret");
+    if (c) c.textContent = "▾";
+  }
+  const last = body.lastElementChild as HTMLElement | null;
+  if (
+    last?.classList.contains("process-reason") &&
+    last.dataset.streaming === "1"
+  ) {
+    last.textContent = (last.textContent ?? "") + text;
+  } else {
+    endProcessStreams();
+    const p = document.createElement("div");
+    p.className = "process-reason";
+    p.dataset.streaming = "1";
+    p.textContent = text;
+    body.appendChild(p);
+    processItemCount += 1;
+    updateProcessHeader();
+  }
+  scrollTranscript();
 }
 
 function markToolStarted(
@@ -3800,6 +3892,8 @@ function scheduleTurnSettle(turnId: number): void {
  * 计划模式且无 exit_plan 弹窗时自动打开计划预览。
  */
 async function afterTurnSettled(): Promise<void> {
+  // 用户停止后不要用磁盘 history 把后续输出回补进 UI
+  if (suppressAgentOutput) return;
   await resyncMissingAssistantFromHistory();
   await maybeSurfacePlanAfterTurn();
 }
@@ -5257,9 +5351,8 @@ function attachmentKind(filePath: string): "file" | "image" | "folder" {
 }
 
 function attachIcon(kind: ComposerAttachment["kind"]): string {
-  if (kind === "image") return "🖼";
-  if (kind === "folder") return "📁";
-  return "📄";
+  if (kind === "folder") return sfIcon("folder", { size: 12, className: "sf-ico sf-ico--sm" });
+  return sfIcon("doc", { size: 12, className: "sf-ico sf-ico--sm" });
 }
 
 function addAttachments(
@@ -6260,25 +6353,62 @@ function maybeGoalFromToolRaw(name?: string, raw?: unknown): void {
   }
 }
 
+/**
+ * 固定浮层相对锚点定位：优先上方（输入栏附近），并夹在视口内。
+ */
+function placeFloatMenu(
+  menu: HTMLElement,
+  anchor: HTMLElement,
+  opts?: { gap?: number; preferAbove?: boolean },
+): void {
+  const gap = opts?.gap ?? 6;
+  const preferAbove = opts?.preferAbove !== false;
+  menu.classList.remove("hidden");
+  const r = anchor.getBoundingClientRect();
+  const mw = menu.offsetWidth || 180;
+  const mh = menu.offsetHeight || 120;
+  const pad = 8;
+
+  let left = r.left;
+  if (left + mw > window.innerWidth - pad) {
+    left = window.innerWidth - mw - pad;
+  }
+  if (left < pad) left = pad;
+
+  const spaceAbove = r.top - pad;
+  const spaceBelow = window.innerHeight - r.bottom - pad;
+  let top: number;
+  if (preferAbove && (spaceAbove >= mh + gap || spaceAbove >= spaceBelow)) {
+    top = Math.max(pad, r.top - mh - gap);
+  } else if (spaceBelow >= mh + gap) {
+    top = r.bottom + gap;
+  } else if (spaceAbove >= mh + gap) {
+    top = Math.max(pad, r.top - mh - gap);
+  } else {
+    // 空间都不够：贴在更高一侧，并尽量不裁切
+    top =
+      spaceAbove > spaceBelow
+        ? pad
+        : Math.max(pad, window.innerHeight - mh - pad);
+  }
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+
+  // + 菜单说明飞出：靠右则改开左侧
+  if (menu.classList.contains("plus-menu")) {
+    const openLeft = left + mw + 220 > window.innerWidth - pad;
+    menu.classList.toggle("flyout-left", openLeft);
+  }
+}
+
 function hidePlusMenu(): void {
   document.getElementById("plus-menu")?.classList.add("hidden");
 }
 
 function showPlusMenu(anchor: HTMLElement): void {
   const menu = $("plus-menu");
-  const r = anchor.getBoundingClientRect();
-  menu.classList.remove("hidden");
-  const mw = menu.offsetWidth || 220;
-  let left = r.left;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  menu.style.left = `${Math.max(8, left)}px`;
-  // 优先显示在按钮上方（对齐 Codex 浮层）
-  const mh = menu.offsetHeight || 160;
-  if (r.top > mh + 12) {
-    menu.style.top = `${r.top - mh - 6}px`;
-  } else {
-    menu.style.top = `${r.bottom + 6}px`;
-  }
+  placeFloatMenu(menu, anchor, { preferAbove: true });
 }
 
 function bindPlusMenu(): void {
@@ -6609,7 +6739,10 @@ function makeThreadRow(
   const row = document.createElement("div");
   const isActive = isThreadOpen(t);
   const isWorking =
-    t.status === "working" || workingSessions.has(t.sessionId);
+    workingSessions.has(t.sessionId) ||
+    // disk_* 行的 status 可能残留 working，不应一直转圈；以 live 标记为准
+    ((t.status === "working" || t.status === "needs_input") &&
+      !t.id.startsWith("disk_"));
   const isFork =
     t.sessionKind === "fork" ||
     (!!t.parentSessionId && t.parentSessionId.length > 0);
@@ -6638,11 +6771,7 @@ function makeThreadRow(
   const fromHtml = fromLabel
     ? `<span class="thread-fork-from">${esc(tr("session.forkFrom", { title: fromLabel }))}</span>`
     : "";
-  const nestMark =
-    nested
-      ? `<span class="thread-nest-mark" aria-hidden="true">└</span>`
-      : "";
-  main.innerHTML = `${spin}<span class="thread-item-text"><span class="thread-title-row">${nestMark}${badge}<span class="thread-title">${titleText}</span></span>${fromHtml}</span><span class="thread-age">${esc(formatAge(t.updatedAt))}</span>`;
+  main.innerHTML = `${spin}<span class="thread-item-text"><span class="thread-title-row">${badge}<span class="thread-title">${titleText}</span></span>${fromHtml}</span><span class="thread-age">${esc(formatAge(t.updatedAt))}</span>`;
   if (fromLabel) {
     main.title = tr("session.forkFrom", { title: fromLabel });
   } else if (nested && t.parentSessionId) {
@@ -6662,7 +6791,7 @@ function makeThreadRow(
   more.className = "thread-act-btn";
   more.title = tr("side.more");
   more.setAttribute("aria-label", tr("side.more"));
-  more.textContent = "⋯";
+  more.innerHTML = sfIcon("ellipsis", { size: 14, className: "sf-ico sf-ico--tool" });
   more.onclick = (e) => {
     e.stopPropagation();
     showThreadMenu(more, t, mode);
@@ -6686,7 +6815,10 @@ function makeArchiveFolder(
   head.className = `project-archive-head${open ? " is-open" : ""}`;
   head.setAttribute("aria-expanded", open ? "true" : "false");
   const count = archivedThreads.length;
-  head.innerHTML = `<span class="archive-ico" aria-hidden="true">📦</span><span class="archive-label">归档</span>${count ? `<span class="archive-count">${count}</span>` : ""}<span class="proj-chev archive-chev" aria-hidden="true">${open ? "▾" : "▸"}</span>`;
+  head.innerHTML =
+    `<span class="archive-ico" aria-hidden="true">${sfIcon("archive", { size: 14 })}</span>` +
+    `<span class="archive-label">归档</span>` +
+    (count ? `<span class="archive-count">${count}</span>` : "");
   head.onclick = (e) => {
     e.stopPropagation();
     if (expandedArchiveIds.has(projectId)) expandedArchiveIds.delete(projectId);
@@ -6776,11 +6908,11 @@ async function refreshProjectsAndThreads(): Promise<void> {
     b.type = "button";
     b.className = `project-item${p.id === selectedProjectId ? " active" : ""}`;
     b.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    // Codex：无箭头指示，点文件夹行即展开/收起
     b.innerHTML =
-      `<span class="proj-chev" aria-hidden="true">${isExpanded ? "▾" : "▸"}</span>` +
-      `<span class="folder-ico">📁</span>` +
+      `<span class="folder-ico" aria-hidden="true">${sfIcon(isExpanded ? "folderFill" : "folder", { size: 15 })}</span>` +
       `<span class="proj-title">${esc(p.title)}</span>` +
-      `<span class="proj-remove" data-remove-project="${esc(p.id)}" title="从列表移除" aria-label="移除项目">×</span>`;
+      `<span class="proj-remove" data-remove-project="${esc(p.id)}" title="从列表移除" aria-label="移除项目">${sfIcon("xmark", { size: 11, className: "sf-ico sf-ico--sm" })}</span>`;
     b.onclick = (e) => {
       const rm = (e.target as HTMLElement).closest("[data-remove-project]") as HTMLElement | null;
       if (rm) {
@@ -6812,12 +6944,14 @@ async function refreshProjectsAndThreads(): Promise<void> {
     if (!isExpanded) {
       threadBox.hidden = true;
     } else {
-      // 归档夹置顶
-      threadBox.appendChild(makeArchiveFolder(p.id, archivedList));
+      // 有归档才显示夹；空态对齐 Codex「无任务」
+      if (archivedList.length) {
+        threadBox.appendChild(makeArchiveFolder(p.id, archivedList));
+      }
       if (!activeList.length) {
         const empty = document.createElement("div");
         empty.className = "empty-threads";
-        empty.textContent = "暂无聊天";
+        empty.textContent = tr("nav.noTasks");
         threadBox.appendChild(empty);
       } else {
         const showAll = projectShowAllThreads.has(p.id);
@@ -6945,6 +7079,10 @@ async function openThread(t: ThreadRow): Promise<void> {
   if (selectedProjectId) expandedProjectIds.add(selectedProjectId);
   showWelcome(false);
   clearTranscript();
+  // 打开旧对话 = 读本地历史回放，不是 resume agent；给明确提示避免误以为在「恢复会话」
+  ensureTurnStatus(tr("history.loading"));
+  // 回放历史时不要占着「working」侧栏转圈（仅 UI 加载态）
+  markSessionWorking(t.sessionId, false);
   void refreshGoalChipFromSession();
 
   try {
@@ -6959,6 +7097,8 @@ async function openThread(t: ThreadRow): Promise<void> {
         toolOutput?: unknown;
       }>;
     }>("history.load", { sessionId: t.sessionId });
+    removeTurnStatus();
+    clearTranscript();
     const userTexts: string[] = [];
     // S15：连贯回放 — user / thought / tool / assistant 同一时间线
     for (const e of hist.data?.entries ?? []) {
@@ -6980,8 +7120,9 @@ async function openThread(t: ThreadRow): Promise<void> {
         role === "reasoning"
       ) {
         if (e.text?.trim()) {
-          // 历史思考并入过程块，与直播 thought.delta 一致
-          appendProcessText(e.text.trim());
+          // 历史思考并入过程块叙事行（对齐 Codex）
+          appendThoughtDelta(e.text.trim());
+          endProcessStreams();
         }
       } else if (role === "system") {
         if (e.text?.trim()) appendLine(e.text, "system");
@@ -7008,8 +7149,15 @@ async function openThread(t: ThreadRow): Promise<void> {
       appendLine(tr("history.replayDone", { n: String(n) }), "system");
     }
     await refreshProjectsAndThreads();
+  } catch (err) {
+    removeTurnStatus();
+    appendLine(
+      err instanceof Error ? err.message : tr("session.resumeFail"),
+      "error",
+    );
   } finally {
     suspendLiveTranscript = false;
+    markSessionWorking(t.sessionId, false);
   }
 }
 
@@ -7593,7 +7741,9 @@ async function showTerminalPanel(): Promise<void> {
 
 // ── Modals ─────────────────────────────────────────────────
 
-function openModal(title: string, html: string): void {
+function openModal(title: string, html: string, opts?: { palette?: boolean }): void {
+  const card = $("modal").querySelector(".modal-card") as HTMLElement | null;
+  card?.classList.toggle("modal-card--palette", Boolean(opts?.palette));
   $("modal-title").textContent = title;
   $("modal-body").innerHTML = html;
   $("modal").classList.remove("hidden");
@@ -7601,27 +7751,106 @@ function openModal(title: string, html: string): void {
 
 function closeModal(): void {
   $("modal").classList.add("hidden");
+  const card = $("modal").querySelector(".modal-card") as HTMLElement | null;
+  card?.classList.remove("modal-card--palette");
+  if (paletteKeyHandler) {
+    window.removeEventListener("keydown", paletteKeyHandler, true);
+    paletteKeyHandler = null;
+  }
+}
+
+function paletteModGlyph(): string {
+  const plat = window.grokDesktop?.platform;
+  if (plat === "darwin") return "⌘";
+  if (/Mac|iPhone|iPad/i.test(navigator.platform || "")) return "⌘";
+  return "Ctrl+";
+}
+
+function projectLabelForThread(t: ThreadRow): string {
+  const p = projects.find((x) => x.id === t.projectId);
+  const title = (p?.title || "").trim();
+  if (!title) return "";
+  return title.length > 18 ? `${title.slice(0, 16)}…` : title;
 }
 
 async function showSearchModal(): Promise<void> {
   await refreshProjectsAndThreads();
+  const mod = paletteModGlyph();
   openModal(
-    tr("common.search"),
-    `<div class="session-search-wrap">
-      <p class="prompt-dlg-hint">${esc(tr("search.resumeHint"))}</p>
-      <input id="search-q" class="prompt-dlg-input" type="search"
+    tr("search.placeholder"),
+    `<div class="task-palette" role="dialog" aria-label="${esc(tr("search.placeholder"))}">
+      <input id="search-q" class="task-palette-q" type="search"
         placeholder="${esc(tr("search.placeholder"))}" autocomplete="off" />
-      <div id="search-hits" class="session-search-list"></div>
-      <div class="prompt-dlg-actions">
-        <button type="button" class="btn-ghost" id="prompt-dlg-cancel">${esc(tr("common.close"))}</button>
-      </div>
+      <div id="search-hits" class="task-palette-body"></div>
     </div>`,
+    { palette: true },
   );
-  const run = async () => {
+
+  let filteredThreads: ThreadRow[] = [];
+  let activeIndex = -1;
+
+  const setActive = (idx: number) => {
+    const rows = Array.from(
+      $("search-hits").querySelectorAll(".task-palette-row"),
+    ) as HTMLElement[];
+    if (!rows.length) {
+      activeIndex = -1;
+      return;
+    }
+    activeIndex = ((idx % rows.length) + rows.length) % rows.length;
+    rows.forEach((row, i) => {
+      row.classList.toggle("is-active", i === activeIndex);
+      if (i === activeIndex) {
+        row.scrollIntoView({ block: "nearest" });
+      }
+    });
+  };
+
+  const activateRow = (el: HTMLElement) => {
+    const kind = el.dataset.kind;
+    if (kind === "thread") {
+      const hit = threads.find((t) => t.sessionId === el.dataset.sid);
+      closeModal();
+      if (hit) {
+        showToast(
+          tr("search.opening", {
+            title: hit.title || hit.sessionId.slice(0, 8),
+          }),
+        );
+        void openThread(hit);
+      }
+      return;
+    }
+    if (kind === "action") {
+      const act = el.dataset.act;
+      closeModal();
+      if (act === "new") $("btn-new-chat").click();
+      else if (act === "open") $("btn-open-location").click();
+      else if (act === "files") void showFilesPanel();
+    }
+  };
+
+  const run = () => {
     const rawQ = ($("search-q") as HTMLInputElement).value.trim();
     const q = rawQ.toLowerCase();
-    const parts: string[] = [];
-    // 完整 session id 精确命中优先（对齐 CLI -r /resume）
+    const sections: string[] = [];
+
+    const active = threads
+      .filter((t) => !t.archived)
+      .filter(
+        (t) =>
+          !q ||
+          t.title.toLowerCase().includes(q) ||
+          t.sessionId.toLowerCase().includes(q) ||
+          t.cwd.toLowerCase().includes(q) ||
+          projectLabelForThread(t).toLowerCase().includes(q),
+      )
+      .sort((a, b) =>
+        (b.updatedAt || "").localeCompare(a.updatedAt || ""),
+      );
+
+    // session id 精确命中置顶
+    let list = [...active];
     if (q.length >= 8) {
       const exact = threads.find(
         (t) =>
@@ -7629,122 +7858,138 @@ async function showSearchModal(): Promise<void> {
           t.sessionId.toLowerCase().startsWith(q),
       );
       if (exact) {
-        parts.push(
-          `<button type="button" class="session-search-item is-resume" data-kind="thread" data-sid="${esc(exact.sessionId)}">
-            <div class="session-search-title">↩ ${esc(tr("search.resumePrefix"))} ${esc(exact.title || exact.sessionId.slice(0, 8))}</div>
-            <div class="session-search-sub">${esc(exact.sessionId)} · ${esc(formatAge(exact.updatedAt) || "")}</div>
-          </button>`,
-        );
+        list = [exact, ...list.filter((t) => t.sessionId !== exact.sessionId)];
       }
     }
-    for (const p of projects) {
-      if (
-        !q ||
-        p.title.toLowerCase().includes(q) ||
-        p.path.toLowerCase().includes(q)
-      ) {
-        parts.push(
-          `<button type="button" class="session-search-item" data-kind="project" data-id="${esc(p.id)}">
-            <div class="session-search-title">📁 ${esc(p.title)}</div>
-            <div class="session-search-sub">${esc(p.path)}</div>
-          </button>`,
-        );
-      }
-    }
-    for (const t of threads.filter((x) => !x.archived)) {
-      if (
-        !q ||
-        t.title.toLowerCase().includes(q) ||
-        t.sessionId.toLowerCase().includes(q) ||
-        t.cwd.toLowerCase().includes(q)
-      ) {
-        // 已作为精确 resume 置顶则跳过重复
+    // 有查询时补充归档
+    if (q) {
+      for (const t of threads.filter((x) => x.archived)) {
         if (
-          q.length >= 8 &&
-          (t.sessionId.toLowerCase() === q ||
-            t.sessionId.toLowerCase().startsWith(q))
+          t.title.toLowerCase().includes(q) ||
+          t.sessionId.toLowerCase().includes(q)
         ) {
-          continue;
+          if (!list.some((x) => x.sessionId === t.sessionId)) list.push(t);
         }
-        parts.push(
-          `<button type="button" class="session-search-item" data-kind="thread" data-sid="${esc(t.sessionId)}">
-            <div class="session-search-title">💬 ${esc(t.title || t.sessionId.slice(0, 8))}</div>
-            <div class="session-search-sub">${esc(formatAge(t.updatedAt) || "")} · ${esc(t.sessionId.slice(0, 8))}${t.archived ? "" : ""}</div>
-          </button>`,
-        );
       }
     }
-    // 归档会话也可按 id / 标题 resume
-    for (const t of threads.filter((x) => x.archived)) {
-      if (
-        q &&
-        (t.title.toLowerCase().includes(q) ||
-          t.sessionId.toLowerCase().includes(q))
-      ) {
-        parts.push(
-          `<button type="button" class="session-search-item" data-kind="thread" data-sid="${esc(t.sessionId)}">
-            <div class="session-search-title">📦 ${esc(t.title || t.sessionId.slice(0, 8))}</div>
-            <div class="session-search-sub">${esc(tr("search.archived"))} · ${esc(t.sessionId.slice(0, 8))}</div>
-          </button>`,
+
+    filteredThreads = list.slice(0, 9);
+    const taskRows = filteredThreads
+      .map((t, i) => {
+        const title = t.title || t.sessionId.slice(0, 8);
+        const proj = projectLabelForThread(t);
+        return (
+          `<button type="button" class="task-palette-row" data-kind="thread" data-sid="${esc(t.sessionId)}" data-idx="${i}">` +
+          `<span class="task-palette-title">${esc(title)}</span>` +
+          (proj ? `<span class="task-palette-meta">${esc(proj)}</span>` : `<span class="task-palette-meta"></span>`) +
+          `<kbd class="task-palette-kbd">${esc(mod)}${i + 1}</kbd>` +
+          `</button>`
         );
-      }
-    }
-    const proj = selectedProject();
-    if (proj && q.length >= 2) {
-      const g = await inv<
-        Array<{ name: string; path: string; line: number; snippet: string }>
-      >("graph.search", { projectPath: proj.path, query: q });
-      for (const h of g.data ?? []) {
-        parts.push(
-          `<button type="button" class="session-search-item" data-kind="symbol" data-path="${esc(h.path)}" data-line="${h.line}">
-            <div class="session-search-title">◇ ${esc(h.name)}</div>
-            <div class="session-search-sub">${esc(h.path)}:${h.line}</div>
-          </button>`,
-        );
-      }
-    }
-    $("search-hits").innerHTML =
-      parts.slice(0, 80).join("") ||
-      `<div class="item-sub">${esc(tr("common.noMatch"))}</div>`;
+      })
+      .join("");
+
+    sections.push(
+      `<section class="task-palette-section">` +
+        `<div class="task-palette-label">${esc(tr("search.tasks"))}</div>` +
+        (taskRows ||
+          `<div class="task-palette-empty">${esc(tr("search.noTasks"))}</div>`) +
+        `</section>`,
+    );
+
+    sections.push(
+      `<section class="task-palette-section">` +
+        `<div class="task-palette-label">${esc(tr("search.recommended"))}</div>` +
+        `<button type="button" class="task-palette-row task-palette-action" data-kind="action" data-act="new">` +
+        `<span class="task-palette-ico">${sfIcon("compose", { size: 15 })}</span>` +
+        `<span class="task-palette-title">${esc(tr("search.newTask"))}</span>` +
+        `<kbd class="task-palette-kbd">${esc(mod)}N</kbd>` +
+        `</button>` +
+        `<button type="button" class="task-palette-row task-palette-action" data-kind="action" data-act="open">` +
+        `<span class="task-palette-ico">${sfIcon("folder", { size: 15 })}</span>` +
+        `<span class="task-palette-title">${esc(tr("search.openFolder"))}</span>` +
+        `<kbd class="task-palette-kbd">${esc(mod)}O</kbd>` +
+        `</button>` +
+        `<button type="button" class="task-palette-row task-palette-action" data-kind="action" data-act="files">` +
+        `<span class="task-palette-ico">${sfIcon("search", { size: 15 })}</span>` +
+        `<span class="task-palette-title">${esc(tr("search.searchFiles"))}</span>` +
+        `<kbd class="task-palette-kbd">${esc(mod)}P</kbd>` +
+        `</button>` +
+        `</section>`,
+    );
+
+    $("search-hits").innerHTML = sections.join("");
     for (const btn of Array.from(
-      $("search-hits").querySelectorAll(".session-search-item"),
+      $("search-hits").querySelectorAll(".task-palette-row"),
     )) {
-      (btn as HTMLElement).onclick = () => {
-        const el = btn as HTMLElement;
-        const kind = el.dataset.kind;
-        if (kind === "project") {
-          selectedProjectId = el.dataset.id ?? null;
-          projectChoiceTouched = true;
-          closeModal();
-          showWelcome(true);
-          void refreshProjectsAndThreads();
-          return;
-        }
-        if (kind === "thread") {
-          const hit = threads.find((t) => t.sessionId === el.dataset.sid);
-          closeModal();
-          if (hit) {
-            showToast(
-              tr("search.opening", {
-                title: hit.title || hit.sessionId.slice(0, 8),
-              }),
-            );
-            void openThread(hit);
-          }
-          return;
-        }
-        if (kind === "symbol") {
-          const pth = el.dataset.path;
-          const line = Number(el.dataset.line);
-          closeModal();
-          if (pth) void sidePane?.openFile(pth, Number.isFinite(line) ? line : undefined);
-        }
-      };
+      (btn as HTMLElement).onclick = () => activateRow(btn as HTMLElement);
+    }
+    setActive(0);
+  };
+
+  if (paletteKeyHandler) {
+    window.removeEventListener("keydown", paletteKeyHandler, true);
+  }
+  paletteKeyHandler = (e: KeyboardEvent) => {
+    if ($("modal").classList.contains("hidden")) return;
+    const meta = e.metaKey || e.ctrlKey;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeModal();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive(activeIndex + 1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive(activeIndex - 1);
+      return;
+    }
+    if (e.key === "Enter") {
+      const rows = Array.from(
+        $("search-hits").querySelectorAll(".task-palette-row"),
+      ) as HTMLElement[];
+      const row = rows[activeIndex];
+      if (row) {
+        e.preventDefault();
+        activateRow(row);
+      }
+      return;
+    }
+    if (meta && e.key >= "1" && e.key <= "9") {
+      const i = Number(e.key) - 1;
+      const hit = filteredThreads[i];
+      if (hit) {
+        e.preventDefault();
+        closeModal();
+        void openThread(hit);
+      }
+      return;
+    }
+    if (meta && e.key.toLowerCase() === "n") {
+      e.preventDefault();
+      closeModal();
+      $("btn-new-chat").click();
+      return;
+    }
+    if (meta && e.key.toLowerCase() === "o") {
+      e.preventDefault();
+      closeModal();
+      $("btn-open-location").click();
+      return;
+    }
+    if (meta && e.key.toLowerCase() === "p") {
+      e.preventDefault();
+      closeModal();
+      void showFilesPanel();
     }
   };
-  $("search-q").oninput = () => void run();
-  $("prompt-dlg-cancel").onclick = () => closeModal();
-  void run();
+  window.addEventListener("keydown", paletteKeyHandler, true);
+
+  $("search-q").oninput = () => run();
+  run();
   requestAnimationFrame(() => ($("search-q") as HTMLInputElement).focus());
 }
 
@@ -7882,11 +8127,9 @@ async function showSettingsPage(): Promise<void> {
 
 function showPermMenu(anchor: HTMLElement): void {
   hideModelMenu();
+  hidePlusMenu();
   const menu = $("perm-menu");
-  const r = anchor.getBoundingClientRect();
-  menu.style.left = `${r.left}px`;
-  menu.style.top = `${r.bottom + 4}px`;
-  menu.classList.remove("hidden");
+  placeFloatMenu(menu, anchor, { preferAbove: true, gap: 4 });
 }
 
 /**
@@ -7922,7 +8165,118 @@ async function cycleSessionMode(): Promise<void> {
 
 // ── Events ─────────────────────────────────────────────────
 
-function showPermission(requestId: string, summary: string): void {
+type PermDecision = "allow_once" | "allow_session" | "allow_always" | "deny";
+
+function parsePermissionDisplay(
+  summary: string,
+  raw?: unknown,
+): { kind: string; kindIcon: "terminal" | "doc" | "plugins"; title: string; detail?: string } {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const toolCall =
+    r.toolCall && typeof r.toolCall === "object"
+      ? (r.toolCall as Record<string, unknown>)
+      : {};
+  const kindRaw = String(toolCall.kind || toolCall.name || "").toLowerCase();
+  const summaryLow = summary.toLowerCase();
+
+  let kind = tr("perm.kindGeneric");
+  let kindIcon: "terminal" | "doc" | "plugins" = "plugins";
+  if (
+    /exec|shell|bash|terminal|command|run/.test(kindRaw) ||
+    /^execute\b/i.test(summary) ||
+    /execute\s*`/.test(summaryLow)
+  ) {
+    kind = tr("perm.kindTerminal");
+    kindIcon = "terminal";
+  } else if (/edit|write|file|read|patch/.test(kindRaw)) {
+    kind = tr("perm.kindFile");
+    kindIcon = "doc";
+  } else if (/mcp|fetch|http|web|network/.test(kindRaw)) {
+    kind = tr("perm.kindNetwork");
+    kindIcon = "plugins";
+  }
+
+  let detail: string | undefined;
+  const content = toolCall.content ?? toolCall.input ?? toolCall.command;
+  if (typeof content === "string" && content.trim()) {
+    detail = content.trim();
+  } else if (content && typeof content === "object") {
+    const c = content as Record<string, unknown>;
+    if (typeof c.command === "string") detail = c.command;
+    else if (typeof c.cmd === "string") detail = c.cmd;
+  }
+  const tick = summary.match(/`([^`]+)`/);
+  if (!detail && tick?.[1]) detail = tick[1];
+
+  let title =
+    (typeof r.description === "string" && r.description.trim()) ||
+    (typeof toolCall.title === "string" && toolCall.title.trim()) ||
+    summary;
+  if (/^execute\b/i.test(title) && detail) {
+    title = tr("perm.allowCommand");
+  } else {
+    const cleaned = title.replace(/`[^`]+`/g, "").replace(/\s+/g, " ").trim();
+    title = cleaned || tr("perm.allowAction");
+  }
+
+  return { kind, kindIcon, title, detail };
+}
+
+/** 权限卡展示用：行数/字数截断，完整原文放 title 悬停看 */
+function truncatePermDetail(
+  text: string,
+  opts?: { maxChars?: number; maxLines?: number },
+): { text: string; truncated: boolean } {
+  const maxChars = opts?.maxChars ?? 240;
+  const maxLines = opts?.maxLines ?? 4;
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return { text: "", truncated: false };
+  const lines = normalized.split("\n");
+  let out = lines.slice(0, maxLines).join("\n");
+  let truncated = lines.length > maxLines;
+  if (out.length > maxChars) {
+    out = out.slice(0, Math.max(0, maxChars - 1)).replace(/\s+\S*$/, "").trimEnd();
+    truncated = true;
+  }
+  if (truncated) out = `${out.replace(/\n+$/, "")}…`;
+  return { text: out, truncated };
+}
+
+function hidePermissionBar(): void {
+  const bar = document.getElementById("permission-bar");
+  bar?.classList.add("hidden");
+  if (bar) bar.innerHTML = "";
+  document.getElementById("perm-allow-menu")?.classList.add("hidden");
+}
+
+async function respondPermission(
+  requestId: string,
+  decision: PermDecision,
+  summary: string,
+): Promise<void> {
+  const low = summary.toLowerCase();
+  await inv("permissions.respond", { requestId, decision });
+  hidePermissionBar();
+  if (
+    decision !== "deny" &&
+    /enter_plan|enter-plan|进入计划/i.test(low)
+  ) {
+    planPhase = "active";
+    permMode = "plan";
+    syncPermLabels();
+  }
+  // 「始终允许」：同步 Desktop 侧始终批准，避免 agent 无 always option 时只相当于允许一次
+  if (decision === "allow_always" && permMode !== "always_approve") {
+    permMode = "always_approve";
+    syncPermLabels();
+    void setThreadModeLive("always_approve");
+  }
+  if (decision !== "deny" && turnActive) {
+    setTurnStatus(tr("turn.thinking"));
+  }
+}
+
+function showPermission(requestId: string, summary: string, raw?: unknown): void {
   // enter_plan_mode：与计划模式一致时自动允许（对齐 CLI 减少打断）
   const low = summary.toLowerCase();
   if (
@@ -7936,29 +8290,66 @@ function showPermission(requestId: string, summary: string): void {
     planPhase = "active";
     permMode = "plan";
     syncPermLabels();
+    if (turnActive) setTurnStatus(tr("turn.thinking"));
     return;
   }
+
+  const { kind, kindIcon, title, detail } = parsePermissionDisplay(summary, raw);
+  const detailView = detail
+    ? truncatePermDetail(detail)
+    : { text: "", truncated: false };
+  const titleView = truncatePermDetail(title, { maxChars: 160, maxLines: 2 });
   const bar = $("permission-bar");
   bar.classList.remove("hidden");
-  bar.innerHTML = `<div>需要批准：${esc(summary)}</div>`;
-  for (const [label, decision] of [
-    ["允许", "allow_once"],
-    ["拒绝", "deny"],
-  ] as const) {
-    const b = document.createElement("button");
-    b.className = decision === "allow_once" ? "btn-dark" : "btn-ghost";
-    b.textContent = label;
-    b.onclick = async () => {
-      await inv("permissions.respond", { requestId, decision });
-      bar.classList.add("hidden");
-      if (decision === "allow_once" && /enter_plan|enter-plan|进入计划/i.test(low)) {
-        planPhase = "active";
-        permMode = "plan";
-        syncPermLabels();
+  bar.innerHTML = `
+    <div class="perm-card">
+      <div class="perm-card-kind">
+        ${sfIcon(kindIcon, { size: 14 })}
+        <span>${esc(kind)}</span>
+      </div>
+      <div class="perm-card-title" title="${esc(title)}">${esc(titleView.text)}</div>
+      ${
+        detail && detailView.text
+          ? `<div class="perm-card-detail${detailView.truncated ? " is-truncated" : ""}" title="${esc(detail)}">${esc(detailView.text)}</div>`
+          : ""
       }
+      <div class="perm-card-actions">
+        <button type="button" class="perm-btn-reject" data-perm="deny">${esc(tr("perm.reject"))}</button>
+        <div class="perm-allow-split">
+          <button type="button" class="perm-btn-allow" data-perm="allow_once">${esc(tr("perm.allowOnce"))}</button>
+          <button type="button" class="perm-btn-allow-chevron" data-perm="allow-menu" aria-label="${esc(tr("perm.moreAllow"))}" aria-haspopup="menu">
+            ${sfIcon("chevronDown", { size: 12 })}
+          </button>
+        </div>
+      </div>
+    </div>`;
+
+  const bind = (sel: string, decision: PermDecision) => {
+    bar.querySelector<HTMLElement>(sel)?.addEventListener("click", () => {
+      void respondPermission(requestId, decision, summary);
+    });
+  };
+  bind('[data-perm="deny"]', "deny");
+  bind('[data-perm="allow_once"]', "allow_once");
+
+  const chevron = bar.querySelector<HTMLElement>('[data-perm="allow-menu"]');
+  const allowMenu = $("perm-allow-menu");
+  chevron?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = !allowMenu.classList.contains("hidden");
+    document.querySelectorAll(".float-menu").forEach((m) => m.classList.add("hidden"));
+    if (open) return;
+    placeFloatMenu(allowMenu, chevron, { preferAbove: true, gap: 6 });
+  });
+
+  allowMenu.querySelectorAll<HTMLElement>("[data-perm-decision]").forEach((btn) => {
+    btn.onclick = () => {
+      const d = btn.dataset.permDecision as PermDecision | undefined;
+      if (!d) return;
+      void respondPermission(requestId, d, summary);
     };
-    bar.appendChild(b);
-  }
+  });
+
   showWelcome(false);
 }
 
@@ -8067,7 +8458,18 @@ function onEvent(raw: unknown): void {
   // create / openThread 期间丢弃直播，避免与 history 叠双份
   if (suspendLiveTranscript) {
     if (ev.type === "permission.requested") {
-      showPermission(ev.requestId, ev.summary);
+      showPermission(ev.requestId, ev.summary, ev.raw);
+    }
+    return;
+  }
+  // 用户停止后：忽略 agent 续写；权限请求直接拒绝，避免卡在批准条
+  if (suppressAgentOutput) {
+    if (ev.type === "permission.requested") {
+      void inv("permissions.respond", {
+        requestId: ev.requestId,
+        decision: "deny",
+      });
+      hidePermissionBar();
     }
     return;
   }
@@ -8143,7 +8545,7 @@ function onEvent(raw: unknown): void {
     case "permission.requested":
       endStreamBubble();
       setTurnStatus("等待批准…");
-      showPermission(ev.requestId, ev.summary);
+      showPermission(ev.requestId, ev.summary, ev.raw);
       break;
     case "agent.error":
       endTurn();
@@ -8209,6 +8611,8 @@ npm start</pre>
       </div>`;
     return;
   }
+  applyPlatformChrome();
+  hydrateSfIcons(document);
   window.grokDesktop.onEvent(onEvent);
   sidePane = new SidePaneController({
     inv,
@@ -8258,7 +8662,9 @@ npm start</pre>
   };
   $("btn-focus-send").onclick = () => sendFromFocus();
   $("focus-input").addEventListener("keydown", (e) => {
-    if ((e as KeyboardEvent).key === "Enter" && !(e as KeyboardEvent).shiftKey) {
+    const ke = e as KeyboardEvent;
+    if (isImeComposingKey(ke)) return;
+    if (ke.key === "Enter" && !ke.shiftKey) {
       e.preventDefault();
       sendFromFocus();
     }
@@ -8345,14 +8751,44 @@ npm start</pre>
     if (e.target === $("modal")) closeModal();
   };
 
-  // 左侧栏展开 / 收起
+  // 左侧栏展开 / 收起（Codex：顶栏红绿灯旁单按钮切换）
   const LS_SIDEBAR = "grok.desktop.sidebarCollapsed";
+  const LS_SIDEBAR_W = "grok.desktop.sidebarWidth";
+  const SIDEBAR_W_MIN = 180;
+  const SIDEBAR_W_MAX = 420;
+  const SIDEBAR_W_DEFAULT = 220;
+  const appEl = document.getElementById("app");
+  const clampSidebarW = (w: number) =>
+    Math.min(SIDEBAR_W_MAX, Math.max(SIDEBAR_W_MIN, Math.round(w)));
+  const applySidebarWidth = (w: number, persist = true) => {
+    const next = clampSidebarW(w);
+    document.documentElement.style.setProperty("--sidebar-w", `${next}px`);
+    if (persist) {
+      try {
+        localStorage.setItem(LS_SIDEBAR_W, String(next));
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  try {
+    const savedW = Number(localStorage.getItem(LS_SIDEBAR_W));
+    applySidebarWidth(
+      Number.isFinite(savedW) && savedW > 0 ? savedW : SIDEBAR_W_DEFAULT,
+      false,
+    );
+  } catch {
+    applySidebarWidth(SIDEBAR_W_DEFAULT, false);
+  }
   const applyLeftSidebar = (collapsed: boolean) => {
-    const app = document.getElementById("app");
-    const expandBtn = document.getElementById("btn-sidebar-expand");
-    app?.classList.toggle("sidebar-collapsed", collapsed);
-    expandBtn?.classList.toggle("hidden", !collapsed);
-    expandBtn?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    const toggleBtn = document.getElementById("btn-sidebar-toggle");
+    appEl?.classList.toggle("sidebar-collapsed", collapsed);
+    document.body.classList.toggle("sidebar-collapsed", collapsed);
+    toggleBtn?.setAttribute("aria-pressed", collapsed ? "false" : "true");
+    toggleBtn?.setAttribute(
+      "title",
+      collapsed ? tr("nav.expandSidebarTitle") : tr("nav.collapseSidebarTitle"),
+    );
     try {
       localStorage.setItem(LS_SIDEBAR, collapsed ? "1" : "0");
     } catch {
@@ -8360,8 +8796,7 @@ npm start</pre>
     }
   };
   const toggleLeftSidebar = () => {
-    const app = document.getElementById("app");
-    const next = !app?.classList.contains("sidebar-collapsed");
+    const next = !appEl?.classList.contains("sidebar-collapsed");
     applyLeftSidebar(next);
   };
   try {
@@ -8369,49 +8804,47 @@ npm start</pre>
   } catch {
     applyLeftSidebar(false);
   }
-  document.getElementById("btn-sidebar-collapse")!.onclick = () =>
-    applyLeftSidebar(true);
-  document.getElementById("btn-sidebar-expand")!.onclick = () =>
-    applyLeftSidebar(false);
+  document.getElementById("btn-sidebar-toggle")!.onclick = () =>
+    toggleLeftSidebar();
+
+  // 左侧栏拖拽改宽
+  const sidebarResizer = document.getElementById("sidebar-resizer");
+  sidebarResizer?.addEventListener("pointerdown", (e) => {
+    if (appEl?.classList.contains("sidebar-collapsed")) return;
+    e.preventDefault();
+    const ev = e as PointerEvent;
+    const startX = ev.clientX;
+    const startW =
+      parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--sidebar-w"),
+      ) || SIDEBAR_W_DEFAULT;
+    appEl?.classList.add("sidebar-resizing");
+    sidebarResizer.classList.add("dragging");
+    sidebarResizer.setPointerCapture(ev.pointerId);
+    const onMove = (moveEv: PointerEvent) => {
+      applySidebarWidth(startW + (moveEv.clientX - startX), false);
+    };
+    const onUp = (upEv: PointerEvent) => {
+      appEl?.classList.remove("sidebar-resizing");
+      sidebarResizer.classList.remove("dragging");
+      try {
+        sidebarResizer.releasePointerCapture(upEv.pointerId);
+      } catch {
+        /* ignore */
+      }
+      const cur =
+        parseFloat(
+          getComputedStyle(document.documentElement).getPropertyValue("--sidebar-w"),
+        ) || startW;
+      applySidebarWidth(cur, true);
+      sidebarResizer.removeEventListener("pointermove", onMove);
+      sidebarResizer.removeEventListener("pointerup", onUp);
+    };
+    sidebarResizer.addEventListener("pointermove", onMove);
+    sidebarResizer.addEventListener("pointerup", onUp);
+  });
 
   $("btn-add-project").onclick = () => void pickAndAddProject();
-
-  $("btn-project-chip").onclick = (e) => {
-    e.stopPropagation();
-    openProjectPicker();
-  };
-  $("project-picker-q").addEventListener("input", () => {
-    renderProjectPickerList(
-      ($("project-picker-q") as HTMLInputElement).value,
-    );
-  });
-  $("project-picker-q").addEventListener("keydown", (e) => {
-    if ((e as KeyboardEvent).key === "Escape") {
-      e.preventDefault();
-      closeProjectPicker();
-    }
-  });
-  $("picker-add-project").onclick = async (e) => {
-    e.stopPropagation();
-    closeProjectPicker();
-    await pickAndAddProject();
-  };
-  $("picker-no-project").onclick = (e) => {
-    e.stopPropagation();
-    selectedProjectId = null;
-    projectChoiceTouched = true;
-    closeProjectPicker();
-    setWelcomeTitle();
-    showWelcome(true);
-    void refreshProjectsAndThreads();
-  };
-  // 点击外部关闭项目选择
-  document.addEventListener("click", (e) => {
-    const t = e.target as HTMLElement;
-    if (!t.closest("#project-picker, #btn-project-chip")) {
-      closeProjectPicker();
-    }
-  });
 
   $("btn-open-location").onclick = async () => {
     const p = selectedProject();
@@ -8501,6 +8934,7 @@ npm start</pre>
   };
   $("composer-input").addEventListener("keydown", (e) => {
     const ke = e as KeyboardEvent;
+    if (isImeComposingKey(ke)) return;
     if (handlePromptHistoryKey($("composer-input") as HTMLTextAreaElement, ke)) {
       return;
     }
@@ -8515,6 +8949,7 @@ npm start</pre>
   });
   $("chat-input").addEventListener("keydown", (e) => {
     const ke = e as KeyboardEvent;
+    if (isImeComposingKey(ke)) return;
     if (handlePromptHistoryKey($("chat-input") as HTMLTextAreaElement, ke)) {
       return;
     }
@@ -8665,9 +9100,6 @@ npm start</pre>
     updateProcessHeader();
     renderGoalBanner();
     setWelcomeTitle();
-    renderProjectPickerList(
-      ($("project-picker-q") as HTMLInputElement | null)?.value ?? "",
-    );
     void refreshProjectsAndThreads();
     slashPalette?.invalidate?.();
   });

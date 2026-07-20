@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import net from "node:net";
-import { desktopLockPath, ensureDesktopDirs } from "./paths.js";
+import { desktopInstanceLockPath, ensureDesktopDirs } from "./paths.js";
 import { writeHandoff } from "./shell-state.js";
 
 export interface SingleInstanceHandle {
@@ -14,6 +14,8 @@ export interface SingleInstanceHandle {
 
 export interface AcquireSingleInstanceOptions {
   home?: string;
+  /** app = 安装包；dev = electron . / npm start */
+  instance?: "app" | "dev";
   /** Invoked on primary when secondary sends TCP payload. */
   onSecondaryPayload?: (payload: string) => void;
 }
@@ -24,9 +26,9 @@ interface LockFile {
   startedAt: string;
 }
 
-function readLock(home?: string): LockFile | null {
+function readLock(lockPath: string): LockFile | null {
   try {
-    const raw = fs.readFileSync(desktopLockPath(home), "utf8");
+    const raw = fs.readFileSync(lockPath, "utf8");
     return JSON.parse(raw) as LockFile;
   } catch {
     return null;
@@ -47,8 +49,18 @@ function portOpen(port: number): Promise<boolean> {
   });
 }
 
+function pidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Acquire a single-instance lock under ~/.grok/desktop/lock.
+ * Acquire a single-instance lock under ~/.grok-desktop/desktop/lock(|-dev).
  * Primary process listens on a local TCP port for secondary handoff.
  * Secondary payloads are written to handoff.json and optional callback.
  */
@@ -62,13 +74,18 @@ export async function acquireSingleInstance(
       ? { home: homeOrOpts, ...maybeOpts }
       : homeOrOpts;
   const home = opts.home;
+  const instance = opts.instance ?? "app";
 
   ensureDesktopDirs(home);
-  const lockPath = desktopLockPath(home);
+  const lockPath = desktopInstanceLockPath(home, instance);
 
-  const existing = readLock(home);
-  // Live primary = lock port still accepts connections (works even if same PID re-enters).
-  if (existing && (await portOpen(existing.port))) {
+  const existing = readLock(lockPath);
+  // Live primary = lock port 可连且 pid 仍存活（避免僵尸锁误判为 secondary 秒退）
+  if (
+    existing &&
+    pidAlive(existing.pid) &&
+    (await portOpen(existing.port))
+  ) {
     return {
       isPrimary: false,
       port: existing.port,
@@ -155,7 +172,7 @@ export async function acquireSingleInstance(
       /* ignore */
     }
     try {
-      const cur = readLock(home);
+      const cur = readLock(lockPath);
       if (cur?.pid === process.pid) fs.unlinkSync(lockPath);
     } catch {
       /* ignore */

@@ -4,6 +4,7 @@
  */
 import type { HostIpcMethod } from "../shared/host-api.js";
 import { tr } from "../shared/i18n/index.js";
+import { sfIcon } from "./sf-icons.js";
 
 type Inv = <T>(
   method: HostIpcMethod,
@@ -190,6 +191,8 @@ export class PluginsPageController {
   private skills: SkillRow[] = [];
   private plugins: PluginRow[] = [];
   private available: PluginRow[] = [];
+  private availableLoadedAt = 0;
+  private availableLoading = false;
   private mcp: McpRow[] = [];
   private markets: MarketSrc[] = [];
   private bound = false;
@@ -306,7 +309,10 @@ export class PluginsPageController {
     page?.addEventListener("click", (e) => {
       if (!this.open) return;
       const t = (e.target as HTMLElement).closest("[data-action]") as HTMLElement | null;
-      if (!t) return;
+      if (!t) {
+        this.closePluginMenus();
+        return;
+      }
       void this.onAction(t);
     });
 
@@ -316,9 +322,54 @@ export class PluginsPageController {
     });
   }
 
+  private closePluginMenus(): void {
+    const page = document.getElementById("plugins-page");
+    page?.querySelectorAll(".plugins-card-menu.is-open").forEach((el) => {
+      const menu = el as HTMLElement;
+      menu.classList.remove("is-open");
+      menu.style.top = "";
+      menu.style.left = "";
+      menu.style.right = "";
+      menu.style.position = "";
+    });
+    page?.querySelectorAll(".plugins-card-btn-more.is-open").forEach((el) => {
+      el.classList.remove("is-open");
+    });
+  }
+
   private async onAction(t: HTMLElement): Promise<void> {
     const action = t.dataset.action;
     if (!action) return;
+
+    if (action === "toggle-plugin-menu") {
+      const wrap = t.closest(".plugins-card-actions");
+      const menu = wrap?.querySelector(".plugins-card-menu") as HTMLElement | null;
+      const wasOpen = menu?.classList.contains("is-open");
+      this.closePluginMenus();
+      if (!wasOpen && menu) {
+        menu.classList.add("is-open");
+        t.classList.add("is-open");
+        // fixed，避免被 .plugins-scroll overflow 裁切
+        const r = t.getBoundingClientRect();
+        const mw = Math.max(menu.offsetWidth, 168);
+        const mh = Math.max(menu.offsetHeight, 1);
+        let top = r.bottom + 4;
+        let left = r.right - mw;
+        if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+        if (left < 8) left = 8;
+        if (left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - mw - 8);
+        menu.style.position = "fixed";
+        menu.style.top = `${top}px`;
+        menu.style.left = `${left}px`;
+        menu.style.right = "auto";
+      }
+      return;
+    }
+
+    // 其它操作先收起菜单
+    if (action !== "tab" && action !== "scope") {
+      this.closePluginMenus();
+    }
 
     if (action === "tab") {
       const id = t.dataset.tab as TabId;
@@ -326,17 +377,16 @@ export class PluginsPageController {
         this.tab = id;
         this.detailName = "";
         if (id === "market") {
-          this.setSectionsHtml(`<div class="plugins-loading">${this.cb.esc(tr("plug.loadingMarket"))}</div>`);
-          if (!this.markets.length || !this.available.length) {
-            await this.reload(true);
-          }
-          // 默认第一个市场源
+          // 市场源列表很快；可安装目录（--available）很慢（~5s），分步加载避免整页转圈
           this.scope = this.markets[0]?.name || "user";
+          this.syncChrome();
+          this.renderBody();
+          void this.ensureMarketCatalog();
         } else {
           this.scope = "user";
+          this.syncChrome();
+          this.renderBody();
         }
-        this.syncChrome();
-        this.renderBody();
       }
       return;
     }
@@ -367,7 +417,7 @@ export class PluginsPageController {
       return;
     }
 
-    if (action === "use-skill" && t.dataset.name) {
+    if ((action === "use-skill" || action === "try-plugin") && t.dataset.name) {
       this.cb.onUseSkill(t.dataset.name);
       this.hide();
       return;
@@ -514,9 +564,18 @@ export class PluginsPageController {
       return;
     }
     if (action === "reload") {
-      this.setSectionsHtml(`<div class="plugins-loading">${this.cb.esc(tr("plug.loadingRefresh"))}</div>`);
-      await this.reload(true);
-      this.renderBody();
+      if (this.tab === "market") {
+        // 刷新：先同步市场源，可安装目录后台拉（避免整页卡死）
+        this.setSectionsHtml(`<div class="plugins-loading">${this.cb.esc(tr("plug.loadingRefresh"))}</div>`);
+        await this.reload(false);
+        this.syncChrome();
+        this.renderBody();
+        void this.ensureMarketCatalog(true);
+      } else {
+        this.setSectionsHtml(`<div class="plugins-loading">${this.cb.esc(tr("plug.loadingRefresh"))}</div>`);
+        await this.reload(false);
+        this.renderBody();
+      }
       return;
     }
   }
@@ -601,13 +660,49 @@ export class PluginsPageController {
     this.plugins = plugins.data ?? [];
     this.mcp = mcp.data ?? [];
     this.markets = markets.ok ? (markets.data ?? []) : [];
-    if (forceAvailable || this.tab === "market") {
+    // 仅显式刷新 / 当前就在市场且无缓存时拉 available（慢路径）
+    if (forceAvailable) {
       await this.reloadAvailable();
     }
     // 市场 Tab：scope 必须落在某个源上，默认第一个
     if (this.tab === "market" && this.markets.length) {
       if (!this.markets.some((m) => m.name === this.scope)) {
         this.scope = this.markets[0].name;
+      }
+    }
+  }
+
+  /** 进入市场：先出壳，再后台拉可安装目录（带短缓存） */
+  private async ensureMarketCatalog(force = false): Promise<void> {
+    if (!this.markets.length) {
+      const markets = await this.cb
+        .inv<MarketSrc[]>("plugins.marketplace.list")
+        .catch(() => ({ ok: false as const, data: [] as MarketSrc[] }));
+      this.markets = markets.ok ? (markets.data ?? []) : [];
+      if (this.markets.length && !this.markets.some((m) => m.name === this.scope)) {
+        this.scope = this.markets[0].name;
+      }
+      if (this.tab === "market" && this.open) {
+        this.syncChrome();
+        this.renderBody();
+      }
+    }
+    const cacheFresh =
+      this.available.length > 0 &&
+      Date.now() - this.availableLoadedAt < 5 * 60_000;
+    if (!force && cacheFresh) return;
+    if (this.availableLoading) return;
+    this.availableLoading = true;
+    if (this.tab === "market" && this.open) {
+      this.renderBody();
+    }
+    try {
+      await this.reloadAvailable();
+    } finally {
+      this.availableLoading = false;
+      if (this.tab === "market" && this.open) {
+        this.syncChrome();
+        this.renderBody();
       }
     }
   }
@@ -622,6 +717,7 @@ export class PluginsPageController {
       this.available = (res.data ?? []).filter(
         (p) => (p.status || "").toLowerCase() === "available",
       );
+      this.availableLoadedAt = Date.now();
     }
   }
 
@@ -943,13 +1039,14 @@ export class PluginsPageController {
     // cap display for performance
     const CAP = 80;
     const shown = list.slice(0, CAP);
+    const listBody = this.availableLoading
+      ? `<div class="plugins-loading">${this.cb.esc(tr("plug.loadingMarket"))}</div>`
+      : shown.length
+        ? `<div class="plugins-grid">${shown.map((p) => this.pluginCard(p, true)).join("")}</div>`
+        : `<div class="plugins-empty">${this.cb.esc(tr("plug.noMarketPlugins"))}</div>`;
     html += `<section class="plugins-section">
-      <h2 class="plugins-section-title">${this.cb.esc(tr("plug.availableTitle", { n: list.length }) + (list.length > CAP ? tr("plug.availableCap", { cap: CAP }) : ""))}</h2>
-      ${
-        shown.length
-          ? `<div class="plugins-grid">${shown.map((p) => this.pluginCard(p, true)).join("")}</div>`
-          : `<div class="plugins-empty">${this.cb.esc(tr("plug.noMarketPlugins"))}</div>`
-      }
+      <h2 class="plugins-section-title">${this.cb.esc(tr("plug.availableTitle", { n: this.availableLoading ? "…" : list.length }) + (!this.availableLoading && list.length > CAP ? tr("plug.availableCap", { cap: CAP }) : ""))}</h2>
+      ${listBody}
     </section>`;
     return html;
   }
@@ -991,32 +1088,33 @@ export class PluginsPageController {
       .join(" · ");
     const isAvail =
       fromMarket || (p.status || "").toLowerCase() === "available";
-    const disabled =
-      (p.status || "").toLowerCase() === "disabled" || p.enabled === false;
 
     let actions = "";
     if (isAvail) {
-      actions = `<button type="button" class="plugins-card-btn primary" data-action="install" data-name="${this.cb.esc(p.name)}" data-source="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.install"))}</button>
-        <button type="button" class="plugins-card-btn" data-action="details" data-name="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.details"))}</button>`;
+      // Codex：未安装只显示描边「安装」
+      actions = `<button type="button" class="plugins-card-btn" data-action="install" data-name="${this.cb.esc(p.name)}" data-source="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.install"))}</button>`;
     } else {
+      // Codex：已安装只显示 …，二级菜单：试用 / 管理 / 卸载
+      const name = this.cb.esc(p.name);
       actions = `
-        <button type="button" class="plugins-card-btn" data-action="details" data-name="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.details"))}</button>
-        ${
-          disabled
-            ? `<button type="button" class="plugins-card-btn primary" data-action="enable" data-name="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.enable"))}</button>`
-            : `<button type="button" class="plugins-card-btn" data-action="disable" data-name="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.disable"))}</button>`
-        }
-        <button type="button" class="plugins-card-btn" data-action="update-plugin" data-name="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.update"))}</button>
-        <button type="button" class="plugins-card-btn" data-action="uninstall" data-name="${this.cb.esc(p.name)}">${this.cb.esc(tr("plug.uninstall"))}</button>
-        ${
-          p.path
-            ? `<button type="button" class="plugins-card-btn" data-action="open-path" data-path="${this.cb.esc(p.path)}">${this.cb.esc(tr("plug.folder"))}</button>`
-            : ""
-        }`;
+        <button type="button" class="plugins-card-btn-more" data-action="toggle-plugin-menu" aria-label="${this.cb.esc(tr("plug.more"))}" aria-haspopup="menu">
+          ${sfIcon("ellipsis", { size: 16 })}
+        </button>
+        <div class="plugins-card-menu" role="menu">
+          <button type="button" class="plugins-card-menu-item" role="menuitem" data-action="try-plugin" data-name="${name}">
+            ${sfIcon("compose", { size: 15 })}<span>${this.cb.esc(tr("plug.try"))}</span>
+          </button>
+          <button type="button" class="plugins-card-menu-item" role="menuitem" data-action="details" data-name="${name}">
+            ${sfIcon("settings", { size: 15 })}<span>${this.cb.esc(tr("plug.manage"))}</span>
+          </button>
+          <button type="button" class="plugins-card-menu-item danger" role="menuitem" data-action="uninstall" data-name="${name}">
+            ${sfIcon("trash", { size: 15 })}<span>${this.cb.esc(tr("plug.uninstall"))}</span>
+          </button>
+        </div>`;
     }
 
     return `
-      <article class="plugins-card plugins-card-tall">
+      <article class="plugins-card">
         <div class="plugins-card-main">
           ${avatarHtml(p.name, this.cb.esc)}
           <div class="plugins-card-text">

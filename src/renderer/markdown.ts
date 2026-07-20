@@ -24,7 +24,7 @@ import yaml from "highlight.js/lib/languages/yaml";
 import diff from "highlight.js/lib/languages/diff";
 import plaintext from "highlight.js/lib/languages/plaintext";
 import DOMPurify from "dompurify";
-import { linkifyFilePaths } from "./file-links.js";
+import { isSlashCommandPath, linkifyFilePaths } from "./file-links.js";
 import { isDiffLanguage, renderDiffBlockHtml } from "./diff-view.js";
 
 hljs.registerLanguage("javascript", javascript);
@@ -110,7 +110,7 @@ mdRenderer.code = function codeToken({ text, lang }: Tokens.Code): string {
     return renderDiffBlockHtml(text);
   }
   const langLabel = language || "text";
-  // 轻量路径可关 hljs；流式阶段我们根本不 parse，定稿默认开高亮
+  // 流式关 hljs（仅转义）；定稿开高亮
   const body = highlightEnabled
     ? highlightCode(text, language)
     : escAttr(text);
@@ -162,12 +162,16 @@ mdRenderer.link = function linkToken({
   if (raw.startsWith("#")) {
     return `<a href="${h}" class="md-anchor-link" data-anchor-id="${escAttr(raw.slice(1))}"${t}>${text}</a>`;
   }
+  // /goal、/plan 等 slash 命令不是文件路径
+  if (isSlashCommandPath(raw)) {
+    return text;
+  }
   // file: 或相对/仓库内路径 → 标记为 md-path-link，由 linkifyFilePaths 转 file-link
   if (
     /^file:/i.test(raw) ||
     raw.startsWith("./") ||
     raw.startsWith("../") ||
-    raw.startsWith("/") ||
+    (raw.startsWith("/") && !isSlashCommandPath(raw)) ||
     /^[A-Za-z]:[\\/]/.test(raw) ||
     /^~[/\\]/.test(raw) ||
     /[\\/]/.test(raw) ||
@@ -234,15 +238,17 @@ export function renderMarkdownToSafeHtml(
 }
 
 /**
- * 流式阶段：纯文本追加，零解析成本。
- * 定稿阶段再 paintAssistantHtml 全量 Markdown。
+ * 流式阶段：边输出边渲染 Markdown（补闭合 fence、关高亮、不做路径链化）。
+ * 由调用方 rAF 合并，避免每个 token 都 parse。
  */
 export function paintAssistantStreaming(el: HTMLElement, raw: string): void {
   el.dataset.raw = raw;
   el.dataset.stream = "1";
   el.classList.add("prose", "streaming");
-  // textContent 最快，保留换行靠 CSS white-space
-  el.textContent = raw;
+  el.innerHTML = renderMarkdownToSafeHtml(raw, {
+    highlight: false,
+    fixFences: true,
+  });
 }
 
 /** 定稿：完整 Markdown + 高亮 + 消毒 + 路径链化（每条消息只应调用 1 次） */

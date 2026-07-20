@@ -5,6 +5,7 @@
  * - 选择：插入 @rel/path，并回调 onPick 以便加入附件上下文
  */
 import { tr } from "../shared/i18n/index.js";
+import { sfIcon } from "./sf-icons.js";
 
 export type AtFileHit = {
   path: string;
@@ -201,6 +202,8 @@ export class AtFilePaletteController {
 
   private onKeyDown(ta: HTMLTextAreaElement, e: KeyboardEvent): void {
     if (!this.open) return;
+    // IME 组词中：Enter/方向键交给输入法
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -257,7 +260,9 @@ export class AtFilePaletteController {
       this.items
       .map((h, i) => {
         const active = i === this.active ? " active" : "";
-        const ico = h.isDirectory ? "📁" : "📄";
+        const ico = h.isDirectory
+          ? sfIcon("folder", { size: 14, className: "sf-ico sf-ico--sm" })
+          : sfIcon("doc", { size: 14, className: "sf-ico sf-ico--sm" });
         return `<button type="button" class="at-file-item${active}" role="option" data-idx="${i}" aria-selected="${i === this.active}">
           <span class="at-file-ico" aria-hidden="true">${ico}</span>
           <span class="at-file-body">

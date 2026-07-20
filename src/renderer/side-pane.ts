@@ -6,6 +6,7 @@ import type { HostIpcMethod } from "../shared/host-api.js";
 import { t as tr } from "../shared/i18n/index.js";
 import { renderMarkdownToSafeHtml } from "./markdown.js";
 import { linkifyFilePaths } from "./file-links.js";
+import { sfIcon } from "./sf-icons.js";
 
 type HostRes<T> = {
   ok: boolean;
@@ -736,7 +737,8 @@ export class SidePaneController {
   }
 
   private fileIcon(ent: TreeEntry): string {
-    if (ent.isDirectory) return "📁";
+    // 侧栏文件树：目录用 SF folder；文件用短标签（保留类型辨识）
+    if (ent.isDirectory) return "__folder__";
     const e = ent.ext.toLowerCase();
     if (e === "md") return "MD";
     if (e === "ts" || e === "tsx") return "TS";
@@ -748,9 +750,9 @@ export class SidePaneController {
     if (e === "py") return "PY";
     if (e === "rs") return "RS";
     if (e === "go") return "GO";
-    if (e === "svg" || e === "png" || e === "jpg") return "🖼";
+    if (e === "svg" || e === "png" || e === "jpg") return "IMG";
     if (e === "lock") return "LOCK";
-    return "📄";
+    return "DOC";
   }
 
   private renderFileTree(): void {
@@ -798,15 +800,19 @@ export class SidePaneController {
 
       const expanded = this.expandedDirs.has(ent.path);
       const chevron = ent.isDirectory
-        ? `<span class="ft-chev">${expanded ? "▾" : "▸"}</span>`
+        ? `<span class="ft-chev">${sfIcon(expanded ? "chevronDown" : "chevronRight", { size: 11, className: "sf-ico sf-ico--sm" })}</span>`
         : `<span class="ft-chev ft-spacer"></span>`;
-      const ico = this.fileIcon(ent);
+      const icoRaw = this.fileIcon(ent);
       const icoCls = ent.isDirectory
         ? "ft-ico dir"
         : `ft-ico ext-${ent.ext || "file"}`;
+      const icoHtml =
+        icoRaw === "__folder__"
+          ? sfIcon("folder", { size: 13, className: "sf-ico sf-ico--sm" })
+          : esc(icoRaw);
       row.innerHTML =
         chevron +
-        `<span class="${icoCls}">${esc(ico)}</span>` +
+        `<span class="${icoCls}">${icoHtml}</span>` +
         `<span class="ft-name">${esc(ent.name)}</span>`;
 
       row.onclick = () => void this.onTreeClick(ent);

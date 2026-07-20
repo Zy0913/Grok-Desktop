@@ -1,0 +1,733 @@
+/**
+ * macOS + Codex 对齐：SF 图标、系统字体、自然过渡、按钮排布
+ */
+
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+    "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+  --ease-mac: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-instant: 0.12s;
+  --dur-fast: 0.2s;
+  --dur-ui: 0.32s;
+  --dur-sheet: 0.48s;
+  --ico-nav: 16px;
+  --ico-tool: 15px;
+  --ico-top: 17px;
+  --hit-nav: 28px;
+}
+
+html,
+body {
+  font-family: var(--font);
+  font-feature-settings: "ss01" on, "ss07" on;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── SF 图标 ─────────────────────────────────────────── */
+.sf-ico {
+  width: var(--ico-nav);
+  height: var(--ico-nav);
+  min-width: var(--ico-nav);
+  min-height: var(--ico-nav);
+  display: block;
+  flex-shrink: 0;
+  overflow: visible;
+  color: inherit;
+  opacity: 0.88;
+  transition:
+    opacity var(--dur-fast) var(--ease-mac),
+    color var(--dur-fast) var(--ease-mac),
+    transform var(--dur-ui) var(--ease-out);
+}
+
+.sf-ico.sf-ico--sm {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+}
+.sf-ico.sf-ico--tool {
+  width: var(--ico-tool);
+  height: var(--ico-tool);
+  min-width: var(--ico-tool);
+  min-height: var(--ico-tool);
+}
+.sf-ico.sf-ico--top {
+  width: var(--ico-top);
+  height: var(--ico-top);
+  min-width: var(--ico-top);
+  min-height: var(--ico-top);
+}
+.sf-ico.sf-ico--md {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+.nav-ico,
+.folder-ico,
+.archive-ico,
+.picker-search-ico,
+.picker-action-ico,
+.session-mode-ico,
+.mode-dot,
+.plus-item-ico,
+.goal-banner-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ico-nav);
+  height: var(--ico-nav);
+  flex-shrink: 0;
+  line-height: 0;
+  font-size: 0;
+  opacity: 1;
+  color: var(--text-2);
+}
+
+.nav-row .nav-ico .sf-ico,
+.nav-row .sf-ico {
+  opacity: 0.78;
+}
+.nav-row:hover .nav-ico .sf-ico,
+.nav-row:hover .sf-ico,
+.nav-row.primary-nav .sf-ico {
+  opacity: 0.95;
+  color: var(--text);
+}
+
+.section-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.section-add-btn .sf-ico {
+  opacity: 0.75;
+}
+.section-add-btn:hover .sf-ico {
+  opacity: 1;
+  color: var(--text);
+}
+.project-item .folder-ico .sf-ico {
+  width: 15px;
+  height: 15px;
+  min-width: 15px;
+  min-height: 15px;
+}
+
+/* ── 交互过渡（自然、不跳） ───────────────────────────── */
+.nav-row,
+.project-item,
+.thread-item,
+.project-threads-more,
+.project-archive-head,
+.icon-ghost,
+.top-icon-btn,
+.pill-btn,
+.btn-dark,
+.btn-ghost,
+.mode-chip,
+.model-chip,
+.session-mode-chip,
+.project-chip,
+.send-btn,
+.picker-action,
+.thread-ctx-item,
+.slash-item,
+.float-menu button,
+.thread-act-btn,
+.proj-remove {
+  transition:
+    background-color var(--dur-ui) var(--ease-mac),
+    color var(--dur-ui) var(--ease-mac),
+    border-color var(--dur-ui) var(--ease-mac),
+    box-shadow var(--dur-ui) var(--ease-mac),
+    opacity var(--dur-ui) var(--ease-mac),
+    transform var(--dur-sheet) var(--ease-spring),
+    filter var(--dur-ui) var(--ease-mac);
+}
+
+.nav-row:active,
+.project-item:active,
+.thread-item:active,
+.icon-ghost:active,
+.top-icon-btn:active,
+.pill-btn:active,
+.send-btn:active,
+.project-chip:active {
+  transform: scale(0.98);
+  transition-duration: var(--dur-instant);
+}
+
+.icon-ghost,
+.top-icon-btn {
+  border-radius: 8px;
+  color: var(--text-2);
+}
+.icon-ghost:hover,
+.top-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.055);
+  color: var(--text);
+}
+.icon-ghost.sm {
+  width: var(--hit-nav);
+  height: var(--hit-nav);
+}
+.top-icon-btn {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  min-height: 30px;
+}
+.top-icon {
+  width: var(--ico-top);
+  height: var(--ico-top);
+  min-width: var(--ico-top);
+  min-height: var(--ico-top);
+}
+
+.nav-row {
+  gap: 10px;
+  padding: 7px 10px;
+  min-height: 32px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 450;
+  letter-spacing: -0.01em;
+}
+.nav-row.primary-nav {
+  font-weight: 510;
+}
+
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text-3);
+  padding: 10px 10px 5px;
+}
+
+.pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.55);
+  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 0.5px 0 rgba(255, 255, 255, 0.8) inset;
+}
+.pill-btn:hover {
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+}
+.pill-btn .nav-ico,
+.pill-btn .sf-ico {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  color: var(--text-2);
+}
+
+.send-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #1c1c1e;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.send-btn .sf-ico {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  opacity: 1;
+  color: #fff;
+}
+.send-btn:hover {
+  filter: brightness(1.08);
+}
+.send-btn:active {
+  filter: brightness(0.96);
+}
+
+.composer-card {
+  transition:
+    box-shadow var(--dur-sheet) var(--ease-spring),
+    border-color var(--dur-ui) var(--ease-mac),
+    background-color var(--dur-ui) var(--ease-mac),
+    transform var(--dur-sheet) var(--ease-spring);
+}
+.composer-card:focus-within {
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.03),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.chip-caret,
+.picker-action-chev,
+.menu-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 0;
+  opacity: 0.55;
+}
+
+.ft-chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 0;
+}
+.ft-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+.ft-ico.dir {
+  font-size: 0;
+  color: var(--text-2);
+}
+.settings-nav-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 0;
+}
+.session-mode-x,
+.goal-banner-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+  line-height: 0;
+}
+.chat-scroll-fab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+}
+.mode-chip,
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* ── Codex 欢迎页 ─────────────────────────────────────── */
+.welcome {
+  padding: 28px 28px 40px;
+  gap: 0;
+}
+.welcome-mark {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 18px;
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.55);
+  border: 0.5px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.welcome-mark-svg {
+  width: 26px;
+  height: 24px;
+  display: block;
+}
+.welcome h1,
+#welcome-title {
+  margin: 0 0 22px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.25;
+  text-align: center;
+  color: var(--text);
+}
+.welcome-proj-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  border-bottom: 1.5px dotted rgba(0, 0, 0, 0.35);
+  border-radius: 0;
+  cursor: default;
+}
+
+.welcome-stack {
+  width: min(640px, 100%);
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* Codex：红绿灯旁固定侧栏开关（挂在 body 下，压过标题栏 drag 层） */
+.chrome-sidebar-toggle {
+  position: fixed;
+  z-index: 70;
+  top: 6px;
+  left: 76px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  color: var(--text-2);
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition:
+    background-color var(--dur-ui) var(--ease-mac),
+    color var(--dur-ui) var(--ease-mac),
+    opacity var(--dur-ui) var(--ease-mac);
+}
+body:not(.platform-darwin) .chrome-sidebar-toggle {
+  left: 10px;
+  top: 8px;
+}
+.chrome-sidebar-toggle:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+.chrome-sidebar-toggle:active {
+  transform: scale(0.96);
+}
+body.sidebar-collapsed .chrome-sidebar-toggle {
+  /* 收起后仍留在顶栏，略强调可点 */
+  color: var(--text);
+}
+
+/* 项目列表更接近 Codex：选中胶囊、弱化移除钮 */
+.project-item .proj-remove {
+  opacity: 0 !important;
+}
+.project-item:hover .proj-remove {
+  opacity: 0.7 !important;
+}
+.project-archive-head {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.thread-item {
+  border-radius: 8px;
+  min-height: 28px;
+}
+.thread-item .thread-age {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+/* ── Codex 输入卡：项目 chip 在顶、工具栏左右排布 ───────── */
+.composer-card {
+  position: relative;
+  padding: 10px 12px 10px;
+  border-radius: 20px;
+  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  box-shadow:
+    0 10px 36px rgba(0, 0, 0, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.85) inset;
+}
+.composer-project-row {
+  margin: 0 2px 6px;
+  align-self: stretch;
+  width: 100%;
+}
+.composer-card .project-chip {
+  height: 26px;
+  padding: 0 8px 0 7px;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  gap: 5px;
+}
+.composer-card .project-chip:hover,
+.composer-card .project-chip.open {
+  background: rgba(0, 0, 0, 0.05);
+  box-shadow: none;
+  border: 0;
+}
+.composer-card textarea {
+  min-height: 52px;
+  padding: 2px 6px 8px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.composer-toolbar {
+  padding: 2px 0 0;
+  gap: 8px;
+}
+.composer-left {
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.composer-right {
+  gap: 8px;
+  margin-left: auto;
+}
+.composer-slash-btn {
+  opacity: 0.55;
+}
+.composer-slash-btn:hover {
+  opacity: 1;
+}
+
+.mode-chip {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  color: var(--orange);
+  font-size: 13px;
+  font-weight: 510;
+  gap: 6px;
+}
+.mode-chip:hover {
+  background: var(--orange-soft);
+}
+.model-chip {
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 8px;
+}
+.model-chip:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text);
+}
+.send-btn {
+  width: 30px;
+  height: 30px;
+  background: #2c2c2e;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+/* 侧栏：Codex 式胶囊选中 */
+.nav-row {
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  gap: 9px;
+}
+.project-item {
+  border-radius: 10px;
+  padding: 6px 8px 6px 6px;
+}
+.project-item.active,
+.thread-item.active {
+  background: transparent;
+  box-shadow: none;
+  font-weight: 510;
+}
+.sf-ico {
+  stroke-width: 1.55;
+}
+
+/* ── Codex 设置页 ─────────────────────────────────────── */
+.settings-page {
+  background: transparent;
+}
+.settings-sidebar {
+  background: rgba(236, 236, 240, 0.55);
+  border-right: 0.5px solid rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(28px) saturate(1.35);
+  -webkit-backdrop-filter: blur(28px) saturate(1.35);
+}
+.settings-main {
+  background: rgba(250, 250, 252, 0.72);
+  backdrop-filter: blur(24px) saturate(1.25);
+  -webkit-backdrop-filter: blur(24px) saturate(1.25);
+}
+.settings-nav-item {
+  border-radius: 10px;
+  min-height: 32px;
+  padding: 7px 10px;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 450;
+}
+.settings-nav-item.active {
+  background: rgba(0, 0, 0, 0.07);
+  box-shadow: none;
+  font-weight: 510;
+}
+.settings-search-wrap {
+  background: rgba(255, 255, 255, 0.7);
+  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  height: 32px;
+  padding: 0 10px;
+}
+.settings-title {
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  margin-bottom: 22px;
+}
+.settings-h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-3);
+  margin: 0 0 8px 4px;
+}
+.settings-card {
+  background: rgba(255, 255, 255, 0.72);
+  border: 0.5px solid rgba(0, 0, 0, 0.06);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+.settings-row {
+  padding: 16px 18px;
+  align-items: center;
+}
+.settings-row-title {
+  font-size: 14px;
+  font-weight: 510;
+}
+.settings-row-sub {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin-top: 4px;
+  line-height: 1.45;
+  max-width: 48ch;
+}
+.settings-select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 32px;
+  padding: 0 28px 0 12px;
+  border-radius: 9px;
+  border: 0.5px solid rgba(0, 0, 0, 0.1);
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7.5 10 4.5 4.5L16.5 10'/%3E%3C/svg%3E")
+      right 10px center / 12px no-repeat,
+    rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  max-width: 220px;
+}
+.settings-toggle {
+  width: 42px;
+  height: 26px;
+  background: rgba(0, 0, 0, 0.12);
+  transition: background var(--dur-ui) var(--ease-mac);
+}
+.settings-toggle::after {
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  transition: transform var(--dur-ui) var(--ease-spring);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+.settings-toggle.on {
+  background: var(--orange);
+}
+.settings-toggle.on::after {
+  transform: translateX(16px);
+}
+
+.pill-btn {
+  height: 28px;
+  border-radius: 8px;
+  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.65);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+
+/* 列表显隐：用透明度/高度过渡替代硬切 */
+.project-threads,
+.project-archive-body {
+  transition: opacity var(--dur-ui) var(--ease-mac);
+}
+
+/* 覆盖玻璃层里偏「傻快」的入场 */
+@media (prefers-reduced-motion: no-preference) {
+  body.platform-darwin .main {
+    animation: mac-sheet-in var(--dur-sheet) var(--ease-spring) both;
+  }
+  body.platform-darwin .composer-card {
+    animation: mac-rise var(--dur-sheet) var(--ease-spring) 0.06s both;
+  }
+}
+
+@keyframes mac-sheet-in {
+  from {
+    opacity: 0.55;
+    transform: translateX(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes mac-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

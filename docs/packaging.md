@@ -40,10 +40,12 @@ npm run sync:agent -- --from /path/to/grok
 npm run check:agent
 npm start
 
-npm run dist:win   # 内置 check:agent；extraResources → resources/agent
+npm run dist:win   # Windows；extraResources → resources/agent
+npm run dist:mac   # macOS DMG（本机 arch；agent-bin/grok 须同架构）
+npm run dist:mac:dir
 ```
 
-`pack` / `dist` / `dist:win` 在缺少有效二进制时会 **失败退出**，避免空 agent 安装包。
+`pack` / `dist` / `dist:win` / `dist:mac` 在缺少有效二进制时会 **失败退出**，避免空 agent 安装包。
 
 校验：设置 → 关于 → 来源应为 `bundled（agent-bin / 安装包）`；若有 `VERSION.txt` 会显示记录版本、同步时间、sha256 前缀。
 
@@ -51,8 +53,9 @@ npm run dist:win   # 内置 check:agent；extraResources → resources/agent
 
 1. 固定 agent 来源后执行 `npm run sync:agent`
 2. 记录 Desktop `package.json` version 与关于页中的 agent version / sha256
-3. Release 说明中同时写清两者
-4. 当前主推 **Windows x64**；macOS/linux target 在 package.json 中保留，需对应平台 agent 二进制
+3. Release 说明中同时写清两者与目标平台（如 `mac-arm64` / `win-x64`）
+4. **agent 二进制必须与安装包目标 OS/CPU 一致**（勿把 Windows `grok.exe` 打进 macOS 包）
+5. macOS 本地包默认 **不签名**（`identity: null`）；分发前需自行签名与公证
 
 ## 相关代码
 

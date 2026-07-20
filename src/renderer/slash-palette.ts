@@ -127,6 +127,8 @@ export class SlashPaletteController {
       }
       return;
     }
+    // IME 组词中：Enter/方向键交给输入法
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();

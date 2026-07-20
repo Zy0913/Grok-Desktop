@@ -10,6 +10,8 @@ const HOST_IPC_CHANNEL = "grok-desktop-host";
 const HOST_EVENT_CHANNEL = "grok-desktop-host-event";
 
 contextBridge.exposeInMainWorld("grokDesktop", {
+  /** win32 | darwin | linux — 供 renderer 做平台样式（标题栏占位等） */
+  platform: process.platform,
   invoke(method, params) {
     return ipcRenderer.invoke(HOST_IPC_CHANNEL, { method, params });
   },

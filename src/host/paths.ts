@@ -27,6 +27,18 @@ export function desktopLockPath(home = os.homedir()): string {
   return path.join(desktopDir(home), "lock");
 }
 
+/**
+ * 单实例锁文件名。
+ * 开发（electron .）与安装包共用同一 GROK_HOME，但锁分离，
+ * 避免「打包版已开 → npm start 亮一下就退」被误当成崩溃。
+ */
+export function desktopInstanceLockPath(
+  home = os.homedir(),
+  instance: "app" | "dev" = "app",
+): string {
+  return path.join(desktopDir(home), instance === "dev" ? "lock-dev" : "lock");
+}
+
 export function desktopLogsDir(home = os.homedir()): string {
   return path.join(desktopDir(home), "logs");
 }

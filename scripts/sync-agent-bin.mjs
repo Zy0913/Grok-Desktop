@@ -117,5 +117,5 @@ console.log(`[sync-agent-bin] version=${version ?? "(unknown)"}`);
 console.log(`[sync-agent-bin] sha256=${sha256.slice(0, 16)}…`);
 console.log(`[sync-agent-bin] 已写 ${versionPath}`);
 console.log(
-  `[sync-agent-bin] 之后 npm start / npm run dist:win 将优先使用 agent-bin`,
+  `[sync-agent-bin] 之后 npm start / npm run dist:mac / npm run dist:win 将优先使用 agent-bin`,
 );

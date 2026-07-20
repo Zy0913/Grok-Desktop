@@ -18,6 +18,7 @@
   <img alt="UX" src="https://img.shields.io/badge/UX-对齐%20Codex-8B5CF6.svg" />
   <img alt="Providers" src="https://img.shields.io/badge/providers-官方%20%2B%20中转-success.svg" />
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
+  <img alt="Platform" src="https://img.shields.io/badge/macOS-arm64%20%2F%20x64-000000.svg" />
   <img alt="Platform" src="https://img.shields.io/badge/Windows-x64-0078D4.svg" />
 </p>
 
@@ -27,12 +28,26 @@
 
 ## 安装与开始
 
-1. 打开 [Releases](https://github.com/fanghui-li/Grok-Desktop/releases)，下载 **`Grok Desktop-*-win-x64.exe`**
-2. 安装并启动
+### 安装包（推荐）
+
+1. 打开 [Releases](https://github.com/fanghui-li/Grok-Desktop/releases)，按系统下载：
+   - **macOS**：`Grok Desktop-*-mac-arm64.dmg` 或 `…-mac-x64.dmg`（与本机芯片一致）
+   - **Windows**：`Grok Desktop-*-win-x64.exe`
+2. 安装并启动（macOS 若提示未签名：右键图标 → 打开 → 仍要打开）
 3. **设置 → 账户与提供商**  
    - **官方账户**：登录 xAI / Grok 官方  
    - **自定义提供商**：填写 OpenAI 兼容中转（Base URL、API Key、模型等）
 4. 添加或选择项目，开始对话  
+
+### 从源码运行（macOS / Windows / Linux）
+
+```bash
+# 需已安装 Grok CLI：https://x.ai/cli
+npm install
+npm run sync:agent   # 同步本机 grok → agent-bin/
+npm start            # 构建并启动 Electron
+# macOS 打包：npm run dist:mac
+```
 
 安装包可内置 agent，一般装完即可用。数据目录默认 **`~/.grok-desktop`**，与命令行 CLI 的 `~/.grok` 分开，互不影响。
 

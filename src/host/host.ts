@@ -172,6 +172,8 @@ export interface DesktopHostOptions {
   agentArgs?: string[];
   env?: NodeJS.ProcessEnv;
   logger?: HostLogger;
+  /** 单实例锁通道：安装包 app，开发 electron . 用 dev（互不抢锁） */
+  instance?: "app" | "dev";
 }
 
 interface LiveThread {
@@ -200,6 +202,7 @@ export class DesktopHost {
   private listeners = new Set<EventListener>();
   private single: SingleInstanceHandle | null = null;
   private disposed = false;
+  private readonly instance: "app" | "dev";
   /** 侧栏文件树目录监听 */
   private fileTreeWatcher: fs.FSWatcher | null = null;
   private fileTreeWatchCwd: string | null = null;
@@ -213,6 +216,7 @@ export class DesktopHost {
 
   constructor(opts: DesktopHostOptions = {}) {
     this.home = opts.home;
+    this.instance = opts.instance ?? "app";
     ensureDesktopDirs(opts.home);
     this.logger = opts.logger ?? new HostLogger(opts.home);
     // Agent / login 一律走 Desktop GROK_HOME，与 CLI ~/.grok 隔离
@@ -247,6 +251,7 @@ export class DesktopHost {
   async initSingleInstance(): Promise<{ isPrimary: boolean; port?: number }> {
     this.single = await acquireSingleInstance({
       home: this.home,
+      instance: this.instance,
       onSecondaryPayload: (payload) => {
         this.logger.info("single_instance.secondary_payload", { payload });
         // FS handoff already written by TCP server; emit for in-process listeners
@@ -262,6 +267,7 @@ export class DesktopHost {
     this.logger.info("single_instance", {
       isPrimary: this.single.isPrimary,
       port: this.single.port,
+      instance: this.instance,
     });
     if (this.single.isPrimary) {
       this.automations.startScheduler((a) => {
@@ -1433,6 +1439,49 @@ export class DesktopHost {
   async turnsCancel(threadId: string): Promise<void> {
     const live = this.requireWritable(threadId);
     await live.client!.cancel();
+  }
+
+  /**
+   * 取消进行中的 turn。优先 live threadId；disk_ 会话用 sessionId 反查；
+   * 仍找不到则对所有可写 live client 发 cancel（避免「UI 停了 agent 还在跑」）。
+   */
+  async turnsCancelActive(opts: {
+    threadId?: string;
+    sessionId?: string;
+  }): Promise<{ cancelled: boolean; via: string }> {
+    const tid = opts.threadId?.trim();
+    if (tid && !tid.startsWith("disk_")) {
+      try {
+        await this.turnsCancel(tid);
+        return { cancelled: true, via: "threadId" };
+      } catch (err) {
+        this.logger.warn("turns.cancel_thread_failed", {
+          threadId: tid,
+          err: String(err),
+        });
+      }
+    }
+    const sid = opts.sessionId?.trim();
+    if (sid) {
+      for (const live of this.threads.values()) {
+        if (!live.client || !live.writable) continue;
+        if (live.thread.sessionId !== sid) continue;
+        await live.client.cancel().catch((err) => {
+          this.logger.warn("turns.cancel_session_failed", {
+            sessionId: sid,
+            err: String(err),
+          });
+        });
+        return { cancelled: true, via: "sessionId" };
+      }
+    }
+    let n = 0;
+    for (const live of this.threads.values()) {
+      if (!live.client || !live.writable) continue;
+      await live.client.cancel().catch(() => undefined);
+      n += 1;
+    }
+    return { cancelled: n > 0, via: n > 0 ? "all_live" : "none" };
   }
 
   permissionsRespond(requestId: string, decision: PermissionDecision): void {

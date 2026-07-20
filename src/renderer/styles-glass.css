@@ -1,0 +1,288 @@
+/**
+ * Codex 视觉 + macOS Liquid Glass 叠层
+ * - 全平台：更接近 Codex 的银灰壳层、主表面圆角、输入卡质感
+ * - darwin + .glass-native：侧栏透出原生玻璃；主区/浮层用高级磨砂
+ */
+
+:root {
+  --bg: #ebebef;
+  --bg-sidebar: transparent;
+  --bg-main: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: rgba(0, 0, 0, 0.05);
+  --bg-active: rgba(0, 0, 0, 0.08);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-soft: rgba(0, 0, 0, 0.05);
+  --text: #1c1c1e;
+  --text-2: #636366;
+  --text-3: #8e8e93;
+  --accent: #1c1c1e;
+  --orange: #e05a2b;
+  --orange-soft: rgba(224, 90, 43, 0.1);
+  --shadow: 0 10px 36px rgba(0, 0, 0, 0.07);
+  --radius: 16px;
+  --radius-main: 18px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --glass-fill: rgba(255, 255, 255, 0.58);
+  --glass-fill-strong: rgba(255, 255, 255, 0.78);
+  --glass-stroke: rgba(255, 255, 255, 0.62);
+  --glass-stroke-dark: rgba(0, 0, 0, 0.06);
+  --glass-blur: 28px;
+  --glass-saturate: 1.45;
+  --glass-shine: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --glass-depth: 0 12px 40px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+html,
+body {
+  font-family: var(--font);
+  letter-spacing: -0.01em;
+}
+
+/* ── 全平台 Codex 主表面 ─────────────────────────────── */
+#app.codex-app,
+.codex-app {
+  background: var(--bg);
+  column-gap: 0;
+}
+
+.main {
+  background: var(--bg-main);
+  border-radius: var(--radius-main) 0 0 var(--radius-main);
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-bottom: 0;
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.045);
+}
+
+.nav-row,
+.project-item,
+.thread-item {
+  border-radius: 10px;
+}
+
+.nav-row:hover,
+.project-item:hover,
+.thread-item:hover {
+  background: var(--bg-hover);
+}
+
+.project-item.active,
+.thread-item.active {
+  background: transparent;
+}
+
+.section-label {
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-weight: 600;
+}
+
+.composer-card {
+  background: var(--glass-fill-strong);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--glass-depth), var(--glass-shine);
+  backdrop-filter: blur(18px) saturate(1.25);
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+}
+
+.composer-card.compact {
+  border-radius: 18px;
+}
+
+.welcome h1 {
+  font-weight: 560;
+  letter-spacing: -0.03em;
+}
+
+.card.tip-card {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--border);
+  box-shadow: var(--glass-shine);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.pill-btn {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--border);
+  box-shadow: var(--glass-shine);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.session-mode-chip {
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.mode-chip.is-full,
+.mode-chip[data-mode="always_approve"],
+.mode-chip {
+  border-radius: 999px;
+}
+
+/* 浮层：菜单 / 命令面板 / 模态 — Codex 式玻璃卡 */
+.thread-ctx-menu,
+.float-menu,
+.slash-palette,
+.at-file-palette,
+.modal-card,
+dialog {
+  background: var(--glass-fill-strong) !important;
+  border: 1px solid var(--glass-stroke-dark) !important;
+  box-shadow: var(--glass-depth), var(--glass-shine) !important;
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+.modal {
+  background: rgba(20, 20, 24, 0.22);
+  backdrop-filter: blur(8px) saturate(1.1);
+  -webkit-backdrop-filter: blur(8px) saturate(1.1);
+}
+
+dialog::backdrop {
+  background: rgba(20, 20, 24, 0.22);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.side-pane {
+  background: rgba(255, 255, 255, 0.92);
+  border-left: 1px solid var(--border);
+}
+
+.icon-ghost:hover {
+  background: var(--bg-hover);
+}
+
+/* ── macOS：透出原生 Liquid Glass / vibrancy ───────────── */
+body.platform-darwin {
+  background: transparent !important;
+}
+
+body.platform-darwin::before {
+  background: transparent;
+  /* 标题栏也透玻璃，仅保留拖拽 */
+  border-bottom: 0;
+}
+
+body.platform-darwin #app.codex-app,
+body.platform-darwin .codex-app {
+  background: transparent;
+}
+
+body.platform-darwin .sidebar {
+  background: transparent;
+}
+
+body.platform-darwin .sidebar-bottom {
+  border-top-color: rgba(0, 0, 0, 0.06);
+}
+
+/* 原生玻璃开启后：侧栏完全透底；主区做成 Codex 磨砂白纸 */
+body.platform-darwin.glass-native .main,
+body.platform-darwin .main {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(255, 255, 255, 0.45);
+  border-left-color: rgba(255, 255, 255, 0.55);
+  box-shadow:
+    -10px 0 36px rgba(0, 0, 0, 0.06),
+    var(--glass-shine),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(36px) saturate(1.55);
+  -webkit-backdrop-filter: blur(36px) saturate(1.55);
+}
+
+body.platform-darwin.glass-native .main {
+  background: rgba(255, 255, 255, 0.66);
+}
+
+body.platform-darwin .nav-row:hover,
+body.platform-darwin .project-item:hover,
+body.platform-darwin .thread-item:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+body.platform-darwin .project-item.active,
+body.platform-darwin .thread-item.active {
+  background: transparent;
+  box-shadow: none;
+}
+
+body.platform-darwin .composer-card {
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.03),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.04);
+  backdrop-filter: blur(40px) saturate(1.7);
+  -webkit-backdrop-filter: blur(40px) saturate(1.7);
+}
+
+body.platform-darwin .pill-btn,
+body.platform-darwin .card.tip-card,
+body.platform-darwin .session-mode-chip {
+  background: rgba(255, 255, 255, 0.42);
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+}
+
+body.platform-darwin .side-pane {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(28px) saturate(1.4);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  border-left-color: rgba(255, 255, 255, 0.4);
+}
+
+body.platform-darwin .thread-ctx-menu,
+body.platform-darwin .float-menu,
+body.platform-darwin .slash-palette,
+body.platform-darwin .at-file-palette,
+body.platform-darwin .modal-card,
+body.platform-darwin dialog {
+  background: rgba(255, 255, 255, 0.52) !important;
+  border: 1px solid rgba(255, 255, 255, 0.55) !important;
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.14),
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  backdrop-filter: blur(48px) saturate(1.8) !important;
+  -webkit-backdrop-filter: blur(48px) saturate(1.8) !important;
+}
+
+/* 设置 / 插件全页：轻磨砂，避免死白 */
+body.platform-darwin .settings-page,
+body.platform-darwin .plugins-page {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(32px) saturate(1.4);
+  -webkit-backdrop-filter: blur(32px) saturate(1.4);
+}
+
+/* 转录区气泡轻微玻璃，避免抢原生层 */
+body.platform-darwin .msg.assistant .msg-body,
+body.platform-darwin .bubble.assistant {
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* 收起侧栏时主区贴边，去掉左圆角阴影错位 */
+body.platform-darwin #app.codex-app.sidebar-collapsed > .main,
+body.platform-darwin .codex-app.sidebar-collapsed > .main {
+  border-radius: 0;
+  box-shadow: none;
+  border-left: 0;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+/* 入场动画改由 styles-mac.css 统一（更长、更缓） */

@@ -8,7 +8,12 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const srcRenderer = path.join(root, "src", "renderer");
 const destRenderer = path.join(root, "dist", "renderer");
 fs.mkdirSync(destRenderer, { recursive: true });
-for (const f of ["index.html", "styles.css"]) {
+for (const f of [
+  "index.html",
+  "styles.css",
+  "styles-glass.css",
+  "styles-mac.css",
+]) {
   fs.copyFileSync(path.join(srcRenderer, f), path.join(destRenderer, f));
 }
 

@@ -11,6 +11,15 @@ const PATH_RE =
 const EXT_HINT =
   /\.(ts|tsx|js|jsx|mjs|cjs|json|md|css|scss|html|vue|py|rs|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|sql|yml|yaml|toml|xml|sh|bash|zsh|ps1|bat|cmd|txt|log|env|gitignore|dockerignore|lock|gradle|proto|graphql|gql|vue|svelte)$/i;
 
+/**
+ * `/goal`、`/plan`、`/status` 等 CLI slash：单段、无扩展名的「假绝对路径」。
+ * 真文件至少还有一层目录（/Users/…/a.ts）或带扩展（/tmp/x.md）。
+ */
+export function isSlashCommandPath(p: string): boolean {
+  const s = p.trim().replace(/[.,;:)+\]}>]+$/g, "");
+  return /^\/[A-Za-z][\w-]*$/.test(s);
+}
+
 export type ParsedFileRef = {
   path: string;
   line?: number;
@@ -32,6 +41,8 @@ export function parseFileRef(match: string, line?: string, col?: string): Parsed
   // 去掉尾部标点
   p = p.replace(/[.,;:)+\]}>]+$/g, "");
   if (p.length < 3) return null;
+  // 勿把 /goal /plan 等斜杠命令当成文件
+  if (isSlashCommandPath(p)) return null;
   // 相对路径需要像文件；绝对路径放宽
   const isAbs =
     /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\\\");
@@ -199,6 +210,12 @@ export function linkifyFilePaths(
       if (lineM && !/^[A-Za-z]:\\/.test(p) && !/^[A-Za-z]:\//.test(p)) {
         p = lineM[1]!;
         line = Number(lineM[2]);
+      }
+      if (isSlashCommandPath(p)) {
+        // Markdown 误链的 slash 命令：还原为纯文本
+        const text = a.textContent || p;
+        a.replaceWith(document.createTextNode(text));
+        return;
       }
       const resolved = resolveAgainstCwd(p, cwd);
       a.classList.add("file-link");
