@@ -8,6 +8,7 @@ import { renderMarkdownToSafeHtml } from "./markdown.js";
 import { linkifyFilePaths } from "./file-links.js";
 import { hydrateSfIcons, sfIcon } from "./sf-icons.js";
 import { TerminalPaneController } from "./terminal-pane.js";
+import { ChangesPaneController } from "./changes-pane.js";
 import type { NormalizedEvent } from "../shared/events.js";
 
 type HostRes<T> = {
@@ -38,7 +39,7 @@ const LS_OPEN = "grok.desktop.sidePaneOpen";
 const LS_WIDTH = "grok.desktop.sidePaneWidth";
 const LS_CAT = "grok.desktop.sidePaneCat";
 
-export type SideCategory = "home" | "files" | "browser" | "terminal" | "plan" | "agents";
+export type SideCategory = "home" | "files" | "browser" | "terminal" | "plan" | "agents" | "changes";
 
 function $(id: string): HTMLElement {
   return document.getElementById(id) as HTMLElement;
@@ -149,6 +150,7 @@ export class SidePaneController {
   private focusMode = false;
   private onFocusModeChange?: (focus: boolean) => void;
   private terminalPane: TerminalPaneController | null = null;
+  private changesPane: ChangesPaneController | null = null;
   constructor(opts: {
     inv: Inv;
     getCwd: () => string | null;
@@ -166,11 +168,15 @@ export class SidePaneController {
     this.applyTreeVisible();
     this.applyFocusMode();
     this.mountTerminalPane();
+    this.mountChangesPane();
     this.syncSideTopLead();
     if (this.open) this.applyOpenState(true);
     // 恢复偏好若已在终端分类：自动开 shell（对齐 Cursor）
     if (this.category === "terminal" && this.open) {
       this.terminalPane?.ensureDefaultTerminal();
+    }
+    if (this.category === "changes" && this.open) {
+      void this.changesPane?.refresh();
     }
   }
 
@@ -190,6 +196,20 @@ export class SidePaneController {
       onPlusClick: (anchor) => this.toggleSidePlusMenu(anchor),
     });
     this.terminalPane.mount(body);
+  }
+
+  private mountChangesPane(): void {
+    const body = document.getElementById("side-changes-body");
+    if (!body) return;
+    this.changesPane = new ChangesPaneController({
+      inv: (method, params) => this.inv(method as HostIpcMethod, params),
+      getCwd: () => this.getCwd(),
+      openFile: (relPath, line) => {
+        void this.openFile(relPath, line);
+      },
+    });
+    this.changesPane.mount(body);
+    this.changesPane.setOnBack(() => this.setCategory("home", true));
   }
 
   /** Forward host terminal.* events */
@@ -294,7 +314,7 @@ export class SidePaneController {
     if (act === "files") this.setCategory("files", true);
     else if (act === "browser") this.setCategory("browser", true);
     else if (act === "agents") this.setCategory("agents", true);
-    else if (act === "changes") void this.showChangesSummary();
+    else if (act === "changes") this.setCategory("changes", true);
     else if (act === "terminal") {
       const alreadyOnTerminal = this.category === "terminal" && this.open;
       this.setCategory("terminal", true);
@@ -418,6 +438,7 @@ export class SidePaneController {
     if (cat === "files") void this.refreshFileTree();
     else void this.syncFileWatch();
     if (cat === "agents") void this.refreshAgentsTree();
+    if (cat === "changes") void this.changesPane?.refresh();
   }
 
   /**
@@ -677,6 +698,7 @@ export class SidePaneController {
       "terminal",
       "plan",
       "agents",
+      "changes",
     ] as const) {
       const view = document.getElementById(`side-cat-${cat}`);
       view?.classList.toggle("hidden", cat !== this.category);
@@ -711,6 +733,7 @@ export class SidePaneController {
       files: { chromeId: "side-chrome-files", parentId: "side-cat-files" },
       browser: { chromeId: "side-chrome-browser", parentId: "side-cat-browser" },
       agents: { chromeId: "side-chrome-agents", parentId: "side-cat-agents" },
+      changes: { chromeId: "side-chrome-changes", parentId: "side-cat-changes" },
       terminal: { chromeId: "term-pane-toolbar", parentId: "side-terminal-body" },
     };
     const cfg = configs[this.category];
@@ -789,7 +812,7 @@ export class SidePaneController {
         if (tile === "files") this.setCategory("files", true);
         else if (tile === "browser") this.setCategory("browser", true);
         else if (tile === "terminal") this.setCategory("terminal", true);
-        else if (tile === "changes") void this.showChangesSummary();
+        else if (tile === "changes") this.setCategory("changes", true);
       };
     }
     for (const el of Array.from(document.querySelectorAll("[data-side-home]"))) {
@@ -1230,28 +1253,9 @@ export class SidePaneController {
     info.textContent = text;
   }
 
-  /** 显示工作树变更摘要（文件分类下） */
+  /** 打开 Changes 面板（Cursor 式未提交变更） */
   async showChangesSummary(): Promise<void> {
-    this.setCategory("files", true);
-    const cwd = this.getCwd();
-    if (!cwd) {
-      this.showInfo(tr("side.needProject"));
-      return;
-    }
-    const res = await this.inv<{
-      files: Array<{ path: string; status: string }>;
-    }>("changes.summary", { cwd });
-    const lines = (res.data?.files ?? [])
-      .map((f) => `${f.status}  ${f.path}`)
-      .join("\n");
-    // 有打开文件时不打断预览，仅无 tab 时显示摘要
-    if (!this.tabs.length) {
-      this.showInfo(
-        "文件 / 变更\n\n" +
-          (lines || "工作树干净 · 无未提交变更") +
-          "\n\n从右侧文件树选择文件预览。",
-      );
-    }
+    this.setCategory("changes", true);
   }
 
   private renderAll(): void {

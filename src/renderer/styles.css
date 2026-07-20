@@ -6222,3 +6222,150 @@ dialog input {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
+
+/* ── Cursor-style Changes panel ─────────────────────────── */
+.changes-pane-body {
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.changes-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  height: 100%;
+}
+.changes-summary {
+  flex: 0 0 auto;
+  padding: 10px 14px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+}
+.changes-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.changes-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-3, #8e8e93);
+  font-size: 13px;
+}
+.changes-file {
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.changes-file.is-open {
+  background: #fff;
+  border-color: var(--border);
+}
+.changes-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.changes-file-head:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+.changes-file-chev {
+  width: 12px;
+  color: var(--text-3);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.changes-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 0 0 auto;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changes-file-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changes-file-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-2);
+}
+.changes-file.is-new .changes-file-badge {
+  background: rgba(26, 127, 55, 0.12);
+  color: #1a7f37;
+}
+.changes-file.is-del .changes-file-badge {
+  background: rgba(207, 34, 46, 0.12);
+  color: #cf222e;
+}
+.changes-file-stats {
+  display: inline-flex;
+  gap: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.changes-stat-add { color: #1a7f37; font-weight: 600; }
+.changes-stat-del { color: #cf222e; font-weight: 600; }
+.changes-file-body {
+  border-top: 1px solid var(--border-soft);
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+.changes-diff-body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.changes-diff-collapsed,
+.changes-diff-loading,
+.changes-diff-empty {
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.changes-load-diff {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--text);
+}
+.changes-load-diff:hover {
+  background: var(--bg-hover);
+}
+.changes-diff-hint {
+  color: var(--text-3);
+}

@@ -138,6 +138,42 @@ export function parseUnifiedDiff(text: string): {
   return { lines, files };
 }
 
+/** 仅渲染 diff 正文行（Changes 面板内嵌用） */
+export function renderDiffBodyHtml(code: string, filePathHint?: string): string {
+  const { lines } = parseUnifiedDiff(code);
+  if (!lines.length) {
+    return `<div class="diff-line diff-meta"><span class="diff-gutter"></span><span class="diff-text">(empty diff)</span></div>`;
+  }
+  return lines
+    .map((ln) => {
+      const cls = `diff-line diff-${ln.kind}`;
+      const lineNo =
+        ln.kind === "add" || ln.kind === "ctx"
+          ? ln.newLine
+          : ln.kind === "del"
+            ? ln.oldLine
+            : undefined;
+      const path = ln.filePath || filePathHint;
+      const pathAttr = path ? ` data-file-path="${esc(path)}"` : "";
+      const lineAttr = lineNo != null ? ` data-line="${lineNo}"` : "";
+      const clickable =
+        path && (ln.kind === "add" || ln.kind === "del" || ln.kind === "ctx")
+          ? " diff-clickable"
+          : "";
+      const gutter =
+        lineNo != null
+          ? `<span class="diff-gutter">${lineNo}</span>`
+          : `<span class="diff-gutter"></span>`;
+      return (
+        `<div class="${cls}${clickable}"${pathAttr}${lineAttr} role="${clickable ? "button" : "presentation"}">` +
+        gutter +
+        `<span class="diff-text">${esc(ln.text)}</span>` +
+        `</div>`
+      );
+    })
+    .join("");
+}
+
 /** 渲染为可点击的 diff 视图 HTML */
 export function renderDiffBlockHtml(code: string): string {
   const { lines, files } = parseUnifiedDiff(code);

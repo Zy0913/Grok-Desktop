@@ -149,6 +149,16 @@ export const enUS: MessageDict = {
   "side.plusMenuAria": "Open panel",
   "side.plusSearch": "Open any file, URL, …",
   "side.plusEmpty": "No matches",
+  "side.changesCount": "{n} Uncommitted Changes",
+  "side.changesNew": "New",
+  "side.changesModified": "Modified",
+  "side.changesDeleted": "Deleted",
+  "side.changesRenamed": "Renamed",
+  "side.changesRefresh": "Refresh changes",
+  "side.changesLoading": "Loading diff…",
+  "side.changesLoadDiff": "Load Diff",
+  "side.changesLargeHint": "Large diffs are hidden by default.",
+  "side.changesNoDiff": "No diff available",
   "side.terminalLead":
     "Terminal commands run under the agent sandbox / permission policy.",
   "side.terminalLeadLive":

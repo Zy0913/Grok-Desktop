@@ -197,6 +197,10 @@ export interface WorktreeInfo {
 export interface ChangeFileSummary {
   path: string;
   status: "A" | "M" | "D" | "R" | "?";
+  /** 新增行数（来自 numstat / 未跟踪文件行数） */
+  additions?: number;
+  /** 删除行数 */
+  deletions?: number;
 }
 
 export interface ChangeSummary {
@@ -204,11 +208,21 @@ export interface ChangeSummary {
   cwd: string;
   files: ChangeFileSummary[];
   rawStat?: string;
+  /** 全部变更合计 + 行 */
+  totalAdditions?: number;
+  /** 全部变更合计 - 行 */
+  totalDeletions?: number;
 }
 
 export interface DiffResult {
   path: string;
   patch: string;
+  additions?: number;
+  deletions?: number;
+  /** 未跟踪 / 新文件整文件作为 + */
+  isNew?: boolean;
+  /** 二进制或过大，仅摘要 */
+  truncated?: boolean;
 }
 
 export interface HunkTimelineEntry {

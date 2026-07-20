@@ -406,6 +406,17 @@
                 </div>
               </div>
 
+              <!-- Changes：Cursor 式未提交变更列表 + 可展开 diff -->
+              <div class="side-cat-view hidden" id="side-cat-changes" data-cat="changes">
+                <div class="side-chrome" id="side-chrome-changes">
+                  <button type="button" class="side-chrome-back" data-side-home data-i18n-title="side.backHome" title="返回">←</button>
+                  <span class="side-chrome-title" data-i18n="side.homeChanges">Changes</span>
+                  <div class="side-chrome-spacer"></div>
+                  <button type="button" class="icon-ghost sm" id="changes-refresh" data-i18n-title="side.changesRefresh" title="刷新变更">↻</button>
+                </div>
+                <div class="side-cat-body changes-pane-body" id="side-changes-body"></div>
+              </div>
+
               <!-- 浏览器类 -->
               <div class="side-cat-view hidden" id="side-cat-browser" data-cat="browser">
                 <div class="side-chrome" id="side-chrome-browser">
