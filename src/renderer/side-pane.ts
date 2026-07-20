@@ -6,7 +6,9 @@ import type { HostIpcMethod } from "../shared/host-api.js";
 import { t as tr } from "../shared/i18n/index.js";
 import { renderMarkdownToSafeHtml } from "./markdown.js";
 import { linkifyFilePaths } from "./file-links.js";
-import { sfIcon } from "./sf-icons.js";
+import { hydrateSfIcons, sfIcon } from "./sf-icons.js";
+import { TerminalPaneController } from "./terminal-pane.js";
+import type { NormalizedEvent } from "../shared/events.js";
 
 type HostRes<T> = {
   ok: boolean;
@@ -36,7 +38,7 @@ const LS_OPEN = "grok.desktop.sidePaneOpen";
 const LS_WIDTH = "grok.desktop.sidePaneWidth";
 const LS_CAT = "grok.desktop.sidePaneCat";
 
-export type SideCategory = "files" | "browser" | "terminal" | "plan" | "agents";
+export type SideCategory = "home" | "files" | "browser" | "terminal" | "plan" | "agents";
 
 function $(id: string): HTMLElement {
   return document.getElementById(id) as HTMLElement;
@@ -120,7 +122,7 @@ type TreeEntry = {
 export class SidePaneController {
   private open = false;
   private width = 680;
-  private category: SideCategory = "files";
+  private category: SideCategory = "home";
   private tabs: FileTab[] = [];
   private activeId: string | null = null;
   private inv: Inv;
@@ -146,6 +148,7 @@ export class SidePaneController {
   /** 全屏展开侧栏（聊天区隐藏，底部悬浮输入） */
   private focusMode = false;
   private onFocusModeChange?: (focus: boolean) => void;
+  private terminalPane: TerminalPaneController | null = null;
   constructor(opts: {
     inv: Inv;
     getCwd: () => string | null;
@@ -162,7 +165,192 @@ export class SidePaneController {
     this.applyCategory();
     this.applyTreeVisible();
     this.applyFocusMode();
+    this.mountTerminalPane();
+    this.syncSideTopLead();
     if (this.open) this.applyOpenState(true);
+    // 恢复偏好若已在终端分类：自动开 shell（对齐 Cursor）
+    if (this.category === "terminal" && this.open) {
+      this.terminalPane?.ensureDefaultTerminal();
+    }
+  }
+
+  private mountTerminalPane(): void {
+    const body = document.getElementById("side-terminal-body");
+    if (!body) return;
+    this.terminalPane = new TerminalPaneController({
+      inv: (method, params) => this.inv(method as HostIpcMethod, params),
+      getCwd: () => this.getCwd(),
+      focusTerminalCategory: () => this.setCategory("terminal", true),
+      onFocus: () => this.toggleFocusMode(),
+      onClose: () => {
+        this.setFocusMode(false);
+        this.setOpen(false);
+      },
+      onBackHome: () => this.setCategory("home", true),
+      onPlusClick: (anchor) => this.toggleSidePlusMenu(anchor),
+    });
+    this.terminalPane.mount(body);
+  }
+
+  /** Forward host terminal.* events */
+  onTerminalEvent(ev: NormalizedEvent): void {
+    this.terminalPane?.onHostEvent(ev);
+  }
+
+  /** Cursor：侧栏 + 二级菜单（home / 终端顶栏共用） */
+  toggleSidePlusMenu(anchor: HTMLElement): void {
+    const menu = document.getElementById("side-plus-menu");
+    if (!menu) return;
+    const open =
+      !menu.classList.contains("hidden") && menu.dataset.anchorId === anchor.id;
+    if (open) {
+      this.hideSidePlusMenu();
+      return;
+    }
+    this.showSidePlusMenu(anchor);
+  }
+
+  private showSidePlusMenu(anchor: HTMLElement): void {
+    const menu = document.getElementById("side-plus-menu");
+    if (!menu) return;
+    // 关闭其它浮层避免叠层
+    document.querySelectorAll(".float-menu").forEach((m) => {
+      if (m !== menu) m.classList.add("hidden");
+    });
+    menu.dataset.anchorId = anchor.id || "side-plus-anchor";
+    this.syncSidePlusKbd();
+    hydrateSfIcons(menu);
+    const q = document.getElementById("side-plus-q") as HTMLInputElement | null;
+    if (q) q.value = "";
+    this.filterSidePlusMenu("");
+    this.placeSidePlusMenu(menu, anchor);
+    this.setSidePlusExpanded(true);
+    requestAnimationFrame(() => q?.focus());
+  }
+
+  hideSidePlusMenu(): void {
+    const menu = document.getElementById("side-plus-menu");
+    menu?.classList.add("hidden");
+    this.setSidePlusExpanded(false);
+  }
+
+  private setSidePlusExpanded(expanded: boolean): void {
+    for (const id of ["btn-side-home-plus", "term-pane-new"] as const) {
+      document.getElementById(id)?.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+  }
+
+  private syncSidePlusKbd(): void {
+    const isMac =
+      document.body.classList.contains("platform-darwin") ||
+      /Mac|iPhone|iPad/.test(navigator.platform);
+    for (const el of Array.from(document.querySelectorAll(".side-plus-kbd"))) {
+      const mac = (el as HTMLElement).dataset.mac;
+      const other = (el as HTMLElement).dataset.other;
+      if (mac && other) (el as HTMLElement).textContent = isMac ? mac : other;
+    }
+  }
+
+  private placeSidePlusMenu(menu: HTMLElement, anchor: HTMLElement): void {
+    const gap = 6;
+    const pad = 8;
+    menu.classList.remove("hidden");
+    const r = anchor.getBoundingClientRect();
+    const mw = menu.offsetWidth || 280;
+    const mh = menu.offsetHeight || 220;
+
+    let left = r.left;
+    if (left + mw > window.innerWidth - pad) left = window.innerWidth - mw - pad;
+    if (left < pad) left = pad;
+
+    // 顶栏 +：优先向下展开
+    let top = r.bottom + gap;
+    if (top + mh > window.innerHeight - pad) {
+      top = Math.max(pad, r.top - mh - gap);
+    }
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  private filterSidePlusMenu(query: string): void {
+    const q = query.trim().toLowerCase();
+    const items = Array.from(
+      document.querySelectorAll<HTMLElement>("#side-plus-list [data-side-plus]"),
+    );
+    let visible = 0;
+    for (const item of items) {
+      const label =
+        item.querySelector(".side-plus-label")?.textContent?.toLowerCase() ?? "";
+      const key = (item.dataset.sidePlus || "").toLowerCase();
+      const match = !q || label.includes(q) || key.includes(q);
+      item.classList.toggle("hidden", !match);
+      if (match) visible += 1;
+    }
+    document.getElementById("side-plus-empty")?.classList.toggle("hidden", visible > 0);
+  }
+
+  private runSidePlusAction(act: string): void {
+    this.hideSidePlusMenu();
+    if (act === "files") this.setCategory("files", true);
+    else if (act === "browser") this.setCategory("browser", true);
+    else if (act === "agents") this.setCategory("agents", true);
+    else if (act === "changes") void this.showChangesSummary();
+    else if (act === "terminal") {
+      const alreadyOnTerminal = this.category === "terminal" && this.open;
+      this.setCategory("terminal", true);
+      // 已在终端：再开一个标签；从 home 切入则由 ensureDefaultTerminal 负责首个 shell
+      if (alreadyOnTerminal) void this.terminalPane?.createUserTerminal();
+    }
+  }
+
+  private bindSidePlusMenu(): void {
+    const menu = document.getElementById("side-plus-menu");
+    if (!menu || menu.dataset.bound === "1") return;
+    menu.dataset.bound = "1";
+
+    const q = document.getElementById("side-plus-q") as HTMLInputElement | null;
+    q?.addEventListener("input", () => this.filterSidePlusMenu(q.value));
+    q?.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.hideSidePlusMenu();
+        return;
+      }
+      if (e.key === "Enter") {
+        const first = menu.querySelector(
+          ".side-plus-item:not(.hidden)",
+        ) as HTMLElement | null;
+        const act = first?.dataset.sidePlus;
+        if (act) {
+          e.preventDefault();
+          this.runSidePlusAction(act);
+        }
+      }
+    });
+
+    menu.addEventListener("click", (e) => {
+      const t = (e.target as HTMLElement).closest(
+        "[data-side-plus]",
+      ) as HTMLElement | null;
+      if (!t) return;
+      const act = t.dataset.sidePlus;
+      if (act) this.runSidePlusAction(act);
+    });
+
+    document.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement;
+      if (
+        t.closest(
+          "#side-plus-menu, #btn-side-home-plus, #term-pane-new",
+        )
+      ) {
+        return;
+      }
+      this.hideSidePlusMenu();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") this.hideSidePlusMenu();
+    });
   }
 
   isOpen(): boolean {
@@ -184,11 +372,15 @@ export class SidePaneController {
   setOpen(next: boolean): void {
     this.open = next;
     if (!next) this.focusMode = false;
+    if (next) {
+      // 顶栏面板按钮打开：落在 Cursor home 四宫格
+      this.category = "home";
+      this.applyCategory();
+    }
     this.applyOpenState(true);
     this.applyFocusMode();
     this.persist();
-    if (next && this.category === "files") void this.refreshFileTree();
-    else void this.syncFileWatch();
+    void this.syncFileWatch();
   }
 
   /** 全屏展开 / 退出（对齐 Codex 文件沉浸布局） */
@@ -212,14 +404,17 @@ export class SidePaneController {
     this.setFocusMode(!this.focusMode);
   }
 
-  /** 切换侧栏分类（文件 / 计划 / 浏览器 / 终端），并确保侧栏展开 */
+  /** 切换侧栏分类，并确保侧栏展开 */
   setCategory(cat: SideCategory, openPane = true): void {
     this.category = cat;
     if (openPane) this.open = true;
     this.applyCategory();
     this.applyOpenState(true);
     this.persist();
-    if (cat === "terminal") this.refreshTerminalCwd();
+    if (cat === "terminal") {
+      this.refreshTerminalCwd();
+      this.terminalPane?.ensureDefaultTerminal();
+    }
     if (cat === "files") void this.refreshFileTree();
     else void this.syncFileWatch();
     if (cat === "agents") void this.refreshAgentsTree();
@@ -389,9 +584,17 @@ export class SidePaneController {
       const w = Number(localStorage.getItem(LS_WIDTH));
       if (Number.isFinite(w) && w >= 320 && w <= 1200) this.width = w;
       const c = localStorage.getItem(LS_CAT) as SideCategory | null;
-      // plan 不持久化为默认分类（避免启动落在计划栏）
-      if (c === "files" || c === "browser" || c === "terminal") {
+      // plan 不持久化为默认；home 为 Cursor 默认入口
+      if (
+        c === "home" ||
+        c === "files" ||
+        c === "browser" ||
+        c === "terminal" ||
+        c === "agents"
+      ) {
         this.category = c;
+      } else {
+        this.category = "home";
       }
     } catch {
       /* ignore */
@@ -416,6 +619,8 @@ export class SidePaneController {
     pane.classList.toggle("hidden", !this.open);
     // 全屏时不显示拖拽条
     resizer.classList.toggle("hidden", !this.open || this.focusMode);
+    this.syncTopChrome();
+    if (!this.open) this.hideSidePlusMenu();
     if (this.open && !this.focusMode) {
       pane.style.width = `${this.width}px`;
     } else if (this.focusMode) {
@@ -427,11 +632,33 @@ export class SidePaneController {
     }
   }
 
+  /**
+   * Cursor：侧栏打开时，顶栏操作迁入右侧面板（左 +，右 打开位置/全屏/收起）；
+   * 关闭时迁回聊天列顶栏。
+   */
+  private syncTopChrome(): void {
+    const chatActions = document.getElementById("main-top-right");
+    const sideActions = document.getElementById("side-pane-top-actions");
+    const plus = document.getElementById("btn-side-home-plus");
+    const openLoc = document.getElementById("btn-open-location");
+    const focus = document.getElementById("btn-side-focus");
+    const layout = document.getElementById("btn-layout");
+    const panel = document.getElementById("btn-panel");
+    if (!chatActions || !sideActions) return;
+
+    const moveTo = this.open ? sideActions : chatActions;
+    for (const el of [openLoc, focus, layout, panel]) {
+      if (el && el.parentElement !== moveTo) moveTo.appendChild(el);
+    }
+    plus?.classList.toggle("hidden", !this.open);
+  }
+
   private applyFocusMode(): void {
     const split = $("main-split");
     const focusBtn = document.getElementById("btn-side-focus");
     const dock = document.getElementById("focus-composer");
     split.classList.toggle("focus-mode", this.focusMode && this.open);
+    this.syncTopChrome();
     if (focusBtn) {
       focusBtn.classList.toggle("active", this.focusMode);
       focusBtn.setAttribute("aria-pressed", this.focusMode ? "true" : "false");
@@ -443,7 +670,14 @@ export class SidePaneController {
   }
 
   private applyCategory(): void {
-    for (const cat of ["files", "browser", "terminal", "plan", "agents"] as const) {
+    for (const cat of [
+      "home",
+      "files",
+      "browser",
+      "terminal",
+      "plan",
+      "agents",
+    ] as const) {
       const view = document.getElementById(`side-cat-${cat}`);
       view?.classList.toggle("hidden", cat !== this.category);
       const btn = document.querySelector(
@@ -451,14 +685,45 @@ export class SidePaneController {
       ) as HTMLElement | null;
       btn?.classList.toggle("active", cat === this.category);
     }
+    this.syncSideTopLead();
+  }
+
+  /** 把各视图的返回/标签并入侧栏顶栏左区，避免 Cursor 式双行头 */
+  private syncSideTopLead(): void {
+    const lead = document.getElementById("side-pane-top-lead");
+    if (!lead) return;
+
+    while (lead.firstChild) {
+      const el = lead.firstChild as HTMLElement;
+      const parentId = el.dataset.returnParent;
+      const parent = parentId ? document.getElementById(parentId) : null;
+      if (parent) {
+        parent.insertBefore(el, parent.firstChild);
+        delete el.dataset.returnParent;
+      } else {
+        lead.removeChild(el);
+      }
+    }
+
+    const configs: Partial<
+      Record<SideCategory, { chromeId: string; parentId: string }>
+    > = {
+      files: { chromeId: "side-chrome-files", parentId: "side-cat-files" },
+      browser: { chromeId: "side-chrome-browser", parentId: "side-cat-browser" },
+      agents: { chromeId: "side-chrome-agents", parentId: "side-cat-agents" },
+      terminal: { chromeId: "term-pane-toolbar", parentId: "side-terminal-body" },
+    };
+    const cfg = configs[this.category];
+    if (!cfg) return;
+    const chrome = document.getElementById(cfg.chromeId);
+    if (!chrome) return;
+    chrome.dataset.returnParent = cfg.parentId;
+    chrome.querySelector("#term-pane-new")?.classList.add("hidden");
+    lead.appendChild(chrome);
   }
 
   private refreshTerminalCwd(): void {
-    const el = document.getElementById("side-terminal-cwd");
-    if (el) {
-      el.textContent =
-        tr("side.cwdLine", { cwd: this.getCwd() ?? tr("side.cwdNone") });
-    }
+    /* cwd 展示已并入终端面板；保留空实现避免旧调用报错 */
   }
 
   private bindChrome(): void {
@@ -517,7 +782,31 @@ export class SidePaneController {
       };
     }
 
-    // 侧栏内分类轨
+    // 侧栏 Cursor home 四宫格 + chrome
+    for (const el of Array.from(document.querySelectorAll("[data-home-tile]"))) {
+      (el as HTMLElement).onclick = () => {
+        const tile = (el as HTMLElement).dataset.homeTile;
+        if (tile === "files") this.setCategory("files", true);
+        else if (tile === "browser") this.setCategory("browser", true);
+        else if (tile === "terminal") this.setCategory("terminal", true);
+        else if (tile === "changes") void this.showChangesSummary();
+      };
+    }
+    for (const el of Array.from(document.querySelectorAll("[data-side-home]"))) {
+      (el as HTMLElement).onclick = () => this.setCategory("home", true);
+    }
+    for (const el of Array.from(document.querySelectorAll("[data-side-focus]"))) {
+      (el as HTMLElement).onclick = () => this.toggleFocusMode();
+    }
+    const homePlus = document.getElementById("btn-side-home-plus");
+    if (homePlus) {
+      homePlus.onclick = (e) => {
+        e.stopPropagation();
+        this.toggleSidePlusMenu(homePlus);
+      };
+    }
+    this.bindSidePlusMenu();
+
     const agentsReload = document.getElementById("btn-agents-reload");
     if (agentsReload) {
       agentsReload.onclick = () => void this.refreshAgentsTree();

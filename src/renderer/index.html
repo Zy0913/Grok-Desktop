@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./styles-glass.css" />
     <link rel="stylesheet" href="./styles-mac.css" />
+    <link rel="stylesheet" href="./xterm.css" />
   </head>
   <body>
     <!-- 须在 #app 外：标题栏 drag 层 z-index 高于 #app，侧栏开关需同层可点 -->
@@ -105,51 +106,49 @@
 
       <!-- 中间主工作区：顶栏 + 可分屏 -->
       <main class="main">
-        <header class="main-top">
-          <div class="main-top-left" aria-hidden="true"></div>
-          <button type="button" class="pill-btn" id="btn-open-location">
-            <span class="nav-ico" data-sf="folder" data-sf-size="14"></span>
-            <span data-i18n="nav.openLocation">打开位置</span>
-          </button>
-          <div class="main-top-right">
-            <!-- 对齐 Codex 顶栏：四角展开 · 单窗横线 · 重叠双窗 -->
-            <button
-              type="button"
-              class="icon-ghost top-icon-btn"
-              id="btn-side-focus"
-              data-i18n-title="nav.fullscreenTitle" title="全屏展开侧栏"
-              aria-pressed="false"
-              data-i18n-aria-label="nav.fullscreen" aria-label="全屏"
-            >
-              <span data-sf="expand" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
-            </button>
-            <button
-              type="button"
-              class="icon-ghost top-icon-btn hidden"
-              id="btn-layout"
-              data-i18n-title="nav.layout" title="布局"
-              data-i18n-aria-label="nav.layout" aria-label="布局"
-              aria-hidden="true"
-              tabindex="-1"
-            >
-              <span data-sf="list" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
-            </button>
-            <button
-              type="button"
-              class="icon-ghost top-icon-btn"
-              id="btn-panel"
-              data-i18n-title="nav.sidePanelTitle" title="展开 / 收起右侧栏"
-              aria-pressed="false"
-              data-i18n-aria-label="nav.sidePanel" aria-label="右侧栏"
-            >
-              <span data-sf="sidebarRight" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
-            </button>
-          </div>
-        </header>
-
         <div class="main-split" id="main-split">
-          <!-- 左：对话 / 欢迎 -->
+          <!-- 左：对话 / 欢迎（顶栏仅覆盖聊天列，对齐 Cursor） -->
           <div class="chat-pane" id="chat-pane">
+            <header class="main-top" id="chat-top">
+              <div class="main-top-left" aria-hidden="true"></div>
+              <div class="main-top-right" id="main-top-right">
+                <button type="button" class="pill-btn" id="btn-open-location">
+                  <span class="nav-ico" data-sf="folder" data-sf-size="14"></span>
+                  <span data-i18n="nav.openLocation">打开位置</span>
+                </button>
+                <button
+                  type="button"
+                  class="icon-ghost top-icon-btn"
+                  id="btn-side-focus"
+                  data-i18n-title="nav.fullscreenTitle" title="全屏展开侧栏"
+                  aria-pressed="false"
+                  data-i18n-aria-label="nav.fullscreen" aria-label="全屏"
+                >
+                  <span data-sf="expand" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
+                </button>
+                <button
+                  type="button"
+                  class="icon-ghost top-icon-btn hidden"
+                  id="btn-layout"
+                  data-i18n-title="nav.layout" title="布局"
+                  data-i18n-aria-label="nav.layout" aria-label="布局"
+                  aria-hidden="true"
+                  tabindex="-1"
+                >
+                  <span data-sf="list" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
+                </button>
+                <button
+                  type="button"
+                  class="icon-ghost top-icon-btn"
+                  id="btn-panel"
+                  data-i18n-title="nav.sidePanelTitle" title="展开 / 收起右侧栏"
+                  aria-pressed="false"
+                  data-i18n-aria-label="nav.sidePanel" aria-label="右侧栏"
+                >
+                  <span data-sf="sidebarRight" data-sf-class="sf-ico sf-ico--top" data-sf-size="17"></span>
+                </button>
+              </div>
+            </header>
             <section id="welcome" class="welcome">
               <div class="welcome-mark" aria-hidden="true">
                 <svg class="welcome-mark-svg" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -303,13 +302,56 @@
             data-i18n-title="side.resize" title="拖动调整宽度"
           ></div>
 
-          <!-- 右：Codex 式可展开侧栏 = 内容区 + 内置分类轨 -->
+          <!-- 右：Cursor 式侧栏 = 自有顶栏 + home 四宫格 -->
           <aside class="side-pane hidden" id="side-pane" data-i18n-aria-label="side.aria" aria-label="侧栏面板">
+            <!-- Cursor：左侧 + / 标签，右侧操作，与聊天顶栏同高 -->
+            <header class="side-pane-top" id="side-pane-top">
+              <button
+                type="button"
+                class="side-chrome-plus"
+                id="btn-side-home-plus"
+                data-i18n-title="side.plusMenu"
+                title="打开…"
+                aria-haspopup="menu"
+                aria-expanded="false"
+              >+</button>
+              <div class="side-pane-top-lead" id="side-pane-top-lead"></div>
+              <div class="side-pane-top-spacer"></div>
+              <div class="side-pane-top-actions" id="side-pane-top-actions"></div>
+            </header>
             <div class="side-pane-main">
+              <!-- Home：Cursor 风格 2×2 启动网格 -->
+              <div class="side-cat-view" id="side-cat-home" data-cat="home">
+                <div class="side-home-body">
+                  <div class="side-home-grid" role="navigation" data-i18n-aria-label="side.cats" aria-label="侧栏分类">
+                    <button type="button" class="side-home-tile" data-home-tile="changes" id="btn-home-changes">
+                      <span class="side-home-tile-ico" data-sf="list" data-sf-size="28"></span>
+                      <span class="side-home-tile-label" data-i18n="side.homeChanges">Changes</span>
+                    </button>
+                    <button type="button" class="side-home-tile" data-home-tile="browser" id="btn-home-browser">
+                      <span class="side-home-tile-ico" data-sf="globe" data-sf-size="28"></span>
+                      <span class="side-home-tile-label" data-i18n="side.homeBrowser">Browser</span>
+                    </button>
+                    <button type="button" class="side-home-tile" data-home-tile="terminal" id="btn-home-terminal">
+                      <span class="side-home-tile-ico" data-sf="terminal" data-sf-size="28"></span>
+                      <span class="side-home-tile-label" data-i18n="side.homeTerminal">Terminal</span>
+                    </button>
+                    <button type="button" class="side-home-tile" data-home-tile="files" id="btn-home-files">
+                      <span class="side-home-tile-ico" data-sf="doc" data-sf-size="28"></span>
+                      <span class="side-home-tile-label" data-i18n="side.homeFile">File</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <!-- 文件类：对齐 Codex — 左预览 + 右文件树 -->
-              <div class="side-cat-view" id="side-cat-files" data-cat="files">
+              <div class="side-cat-view hidden" id="side-cat-files" data-cat="files">
+                <div class="side-chrome" id="side-chrome-files">
+                  <button type="button" class="side-chrome-back" data-side-home data-i18n-title="side.backHome" title="返回">←</button>
+                  <span class="side-chrome-title" data-i18n="side.homeFile">File</span>
+                  <div class="side-chrome-spacer"></div>
+                </div>
                 <div class="side-files-split">
-                  <!-- 左：tabs + 面包屑工具栏 + 内容 -->
                   <div class="side-files-preview-col">
                     <div class="side-pane-tabs-row">
                       <div class="side-pane-tabs" id="side-pane-tabs"></div>
@@ -342,7 +384,6 @@
                       <div class="side-pane-info hidden" id="side-pane-info"></div>
                     </div>
                   </div>
-                  <!-- 右：筛选 + 文件树（对齐 Codex） -->
                   <div class="side-files-tree-col" id="side-files-tree-col">
                     <div class="file-tree-search">
                       <span class="file-tree-search-ico" data-sf="search" data-sf-size="14"></span>
@@ -367,9 +408,10 @@
 
               <!-- 浏览器类 -->
               <div class="side-cat-view hidden" id="side-cat-browser" data-cat="browser">
-                <div class="side-cat-header">
-                  <span class="side-cat-title" data-i18n="side.browser">浏览器</span>
-                  <button type="button" class="icon-ghost sm btn-side-close-any" data-i18n-title="side.collapse" title="收起侧栏">✕</button>
+                <div class="side-chrome" id="side-chrome-browser">
+                  <button type="button" class="side-chrome-back" data-side-home data-i18n-title="side.backHome" title="返回">←</button>
+                  <span class="side-chrome-title" data-i18n="side.homeBrowser">Browser</span>
+                  <div class="side-chrome-spacer"></div>
                 </div>
                 <div class="side-cat-body" id="side-browser-body">
                   <p class="side-cat-lead" data-i18n="side.browserLead">浏览器工具由 agent 通过工具调用使用。</p>
@@ -381,31 +423,19 @@
                 </div>
               </div>
 
-              <!-- 终端类 -->
+              <!-- 终端类：xterm 多标签（ACP + 用户 PTY） -->
               <div class="side-cat-view hidden" id="side-cat-terminal" data-cat="terminal">
-                <div class="side-cat-header">
-                  <span class="side-cat-title" data-i18n="side.terminal">终端</span>
-                  <button type="button" class="icon-ghost sm btn-side-close-any" data-i18n-title="side.collapse" title="收起侧栏">✕</button>
-                </div>
-                <div class="side-cat-body" id="side-terminal-body">
-                  <p class="side-cat-lead" data-i18n="side.terminalLead">终端命令由 agent 在沙盒/权限策略下执行。</p>
-                  <ul class="side-cat-list">
-                    <li data-i18n="side.terminalLi1">构建、测试、脚本</li>
-                    <li data-i18n="side.terminalLi2">在对话中直接提出要运行的命令</li>
-                  </ul>
-                  <p class="side-cat-muted" id="side-terminal-cwd" data-i18n="side.terminalCwd">当前项目：（未选择）</p>
-                </div>
+                <div class="side-cat-body term-pane-body" id="side-terminal-body"></div>
               </div>
 
               
               <!-- 子代理树：会话 subagents.json + 实时 subagent.updated -->
               <div class="side-cat-view hidden" id="side-cat-agents" data-cat="agents">
-                <div class="side-cat-header">
-                  <span class="side-cat-title" data-i18n="side.agents">子代理</span>
-                  <div class="plan-panel-header-actions">
-                    <button type="button" class="icon-ghost sm" id="btn-agents-reload" data-i18n-title="side.agentsReload" title="重新加载">↻</button>
-                    <button type="button" class="icon-ghost sm btn-side-close-any" data-i18n-title="side.collapse" title="收起侧栏">✕</button>
-                  </div>
+                <div class="side-chrome" id="side-chrome-agents">
+                  <button type="button" class="side-chrome-back" data-side-home data-i18n-title="side.backHome" title="返回">←</button>
+                  <span class="side-chrome-title" data-i18n="side.agents">子代理</span>
+                  <div class="side-chrome-spacer"></div>
+                  <button type="button" class="icon-ghost sm" id="btn-agents-reload" data-i18n-title="side.agentsReload" title="重新加载">↻</button>
                 </div>
                 <div class="side-cat-body agents-panel-body" id="side-agents-body">
                   <div class="agents-empty" id="side-agents-empty" data-i18n="side.agentsEmpty">
@@ -456,22 +486,8 @@
               </div>
             </div>
 
-            <!-- 侧栏内分类轨（文件 / 计划 / 浏览器 / 终端） -->
-            <nav class="side-cat-rail" id="side-cat-rail" data-i18n-aria-label="side.cats" aria-label="侧栏分类">
-              <button type="button" class="side-cat-btn active" data-cat="files" id="btn-cat-files" data-i18n-title="side.files" title="文件" data-i18n-aria-label="side.files" aria-label="文件">
-                <span class="side-cat-ico" aria-hidden="true">📄</span>
-              </button>
-              <button type="button" class="side-cat-btn" data-cat="agents" id="btn-cat-agents" data-i18n-title="side.agents" title="子代理" data-i18n-aria-label="side.agents" aria-label="子代理">
-                <span class="side-cat-ico" aria-hidden="true">⑂</span>
-              </button>
-              <!-- 计划栏不走分类轨：仅 /view-plan · 计划 chip · exit_plan 打开 -->
-              <button type="button" class="side-cat-btn" data-cat="browser" id="btn-cat-browser" data-i18n-title="side.browser" title="浏览器" data-i18n-aria-label="side.browser" aria-label="浏览器">
-                <span class="side-cat-ico" aria-hidden="true">🌐</span>
-              </button>
-              <button type="button" class="side-cat-btn" data-cat="terminal" id="btn-cat-terminal" data-i18n-title="side.terminal" title="终端" data-i18n-aria-label="side.terminal" aria-label="终端">
-                <span class="side-cat-ico" aria-hidden="true">⌘</span>
-              </button>
-            </nav>
+            <!-- 分类轨已由 home 四宫格替代（Cursor 风格） -->
+            <nav class="side-cat-rail hidden" id="side-cat-rail" hidden aria-hidden="true"></nav>
           </aside>
         </div>
 
@@ -542,6 +558,48 @@
           <span class="plus-flyout-desc" data-i18n="menu.planSub">开启 Plan · /plan</span>
         </span>
       </button>
+    </div>
+
+    <!-- Cursor 式侧栏 +：打开 File / Terminal / Browser / Changes… -->
+    <div id="side-plus-menu" class="float-menu side-plus-menu hidden" role="menu" data-i18n-aria-label="side.plusMenuAria" aria-label="打开面板">
+      <div class="side-plus-search">
+        <input
+          type="search"
+          id="side-plus-q"
+          class="side-plus-q"
+          data-i18n-placeholder="side.plusSearch"
+          placeholder="Open any file, URL, …"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <div class="side-plus-list" id="side-plus-list">
+        <button type="button" class="side-plus-item" data-side-plus="files" role="menuitem">
+          <span class="side-plus-ico" data-sf="doc" data-sf-size="16"></span>
+          <span class="side-plus-label" data-i18n="side.homeFile">File</span>
+          <span class="side-plus-kbd" data-mac="⌘G" data-other="Ctrl+G">⌘G</span>
+        </button>
+        <button type="button" class="side-plus-item" data-side-plus="terminal" role="menuitem">
+          <span class="side-plus-ico" data-sf="terminal" data-sf-size="16"></span>
+          <span class="side-plus-label" data-i18n="side.homeTerminal">Terminal</span>
+          <span class="side-plus-kbd" data-mac="⌘J" data-other="Ctrl+J">⌘J</span>
+        </button>
+        <button type="button" class="side-plus-item" data-side-plus="browser" role="menuitem">
+          <span class="side-plus-ico" data-sf="globe" data-sf-size="16"></span>
+          <span class="side-plus-label" data-i18n="side.homeBrowser">Browser</span>
+          <span class="side-plus-kbd" data-mac="⇧⌘B" data-other="Ctrl+Shift+B">⇧⌘B</span>
+        </button>
+        <button type="button" class="side-plus-item" data-side-plus="changes" role="menuitem">
+          <span class="side-plus-ico" data-sf="list" data-sf-size="16"></span>
+          <span class="side-plus-label" data-i18n="side.homeChanges">Changes</span>
+          <span class="side-plus-kbd" data-mac="⌘E" data-other="Ctrl+E">⌘E</span>
+        </button>
+        <button type="button" class="side-plus-item" data-side-plus="agents" role="menuitem">
+          <span class="side-plus-ico" data-sf="person" data-sf-size="16"></span>
+          <span class="side-plus-label" data-i18n="side.agents">子代理</span>
+        </button>
+      </div>
+      <div class="side-plus-empty hidden" id="side-plus-empty" data-i18n="side.plusEmpty">无匹配项</div>
     </div>
 
     <!-- Codex 式全页插件 / 技能 -->

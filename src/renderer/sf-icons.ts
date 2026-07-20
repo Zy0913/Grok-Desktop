@@ -39,7 +39,8 @@ export type SfIconName =
   | "paperclip"
   | "person"
   | "command"
-  | "terminal";
+  | "terminal"
+  | "globe";
 
 /** 24×24 viewBox 路径，stroke 由外层 SVG 控制 */
 const PATHS: Record<SfIconName, string> = {
@@ -100,6 +101,8 @@ const PATHS: Record<SfIconName, string> = {
     '<path d="M8.8 7.6A2.4 2.4 0 1 0 6.4 10h2.4v4H6.4a2.4 2.4 0 1 0 2.4 2.4V14h4.8v2.4a2.4 2.4 0 1 0 2.4-2.4h-2.4v-4h2.4a2.4 2.4 0 1 0-2.4-2.4V10H8.8V7.6z"/>',
   terminal:
     '<rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="m7.2 9.2 2.8 2.8-2.8 2.8"/><path d="M12.2 14.8h4.6"/>',
+  globe:
+    '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.4 2.6 3.6 5.5 3.6 8.5S14.4 17.9 12 20.5C9.6 17.9 8.4 15 8.4 12S9.6 6.1 12 3.5z"/>',
 };
 
 export interface SfIconOpts {

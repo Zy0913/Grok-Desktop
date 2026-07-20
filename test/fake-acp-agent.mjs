@@ -9,6 +9,8 @@ import { randomUUID } from "node:crypto";
 const rl = readline.createInterface({ input: process.stdin });
 let sessionId = null;
 const askPermission = process.env.FAKE_ACP_ASK_PERMISSION === "1";
+const forceTerminal = process.env.FAKE_ACP_TERMINAL === "1";
+let clientTerminal = false;
 
 function write(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
@@ -57,6 +59,9 @@ rl.on("line", async (line) => {
   if (!method) return;
 
   if (method === "initialize") {
+    clientTerminal =
+      forceTerminal ||
+      params?.clientCapabilities?.terminal === true;
     write({
       jsonrpc: "2.0",
       id,
@@ -132,6 +137,26 @@ rl.on("line", async (line) => {
         });
       } catch {
         /* client may deny */
+      }
+    }
+
+    if (clientTerminal) {
+      try {
+        const created = await request("terminal/create", {
+          sessionId,
+          command: process.execPath,
+          args: ["-e", "process.stdout.write('fake-term-ok')"],
+          cwd: process.cwd(),
+          outputByteLimit: 65536,
+        });
+        const terminalId = created?.terminalId;
+        if (terminalId) {
+          await request("terminal/wait_for_exit", { sessionId, terminalId });
+          await request("terminal/output", { sessionId, terminalId });
+          await request("terminal/release", { sessionId, terminalId });
+        }
+      } catch {
+        /* client may reject */
       }
     }
 

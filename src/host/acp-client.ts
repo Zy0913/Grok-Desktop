@@ -129,6 +129,8 @@ export interface AcpClientOptions {
   threadId: string;
   onEvent: (event: NormalizedEvent) => void;
   allowFs?: boolean;
+  /** When set, advertise clientCapabilities.terminal and handle terminal/* */
+  terminals?: import("./terminal-service.js").TerminalService;
 }
 
 /**
@@ -227,7 +229,7 @@ export class AcpClient {
       },
       clientCapabilities: {
         fs: { readTextFile: true, writeTextFile: false },
-        terminal: false,
+        terminal: Boolean(this.opts.terminals),
       },
     });
 
@@ -1171,8 +1173,123 @@ export class AcpClient {
       return;
     }
 
+    if (
+      method === "terminal/create" ||
+      method === "terminal/output" ||
+      method === "terminal/wait_for_exit" ||
+      method === "terminal/kill" ||
+      method === "terminal/release" ||
+      method.endsWith("/terminal/create") ||
+      method.endsWith("/terminal/output") ||
+      method.endsWith("/terminal/wait_for_exit") ||
+      method.endsWith("/terminal/kill") ||
+      method.endsWith("/terminal/release")
+    ) {
+      void this.handleTerminalMethod(method, msg);
+      return;
+    }
+
     if ("id" in msg) {
       this.respondError(msg.id as JsonRpcId, `Unsupported method: ${method}`);
+    }
+  }
+
+  private async handleTerminalMethod(
+    method: string,
+    msg: Record<string, unknown>,
+  ): Promise<void> {
+    const id = msg.id as JsonRpcId;
+    const terminals = this.opts.terminals;
+    if (!terminals) {
+      this.respondError(id, "terminal capability not enabled");
+      return;
+    }
+    const params = (msg.params ?? {}) as Record<string, unknown>;
+    const op = method.includes("terminal/")
+      ? method.slice(method.indexOf("terminal/"))
+      : `terminal/${method}`;
+
+    try {
+      if (op === "terminal/create") {
+        const command = String(params.command ?? "");
+        if (!command) {
+          this.respondError(id, "terminal/create requires command");
+          return;
+        }
+        const args = Array.isArray(params.args)
+          ? (params.args as unknown[]).map(String)
+          : undefined;
+        const env = Array.isArray(params.env)
+          ? (params.env as Array<{ name?: string; value?: string }>)
+              .filter((e) => e?.name)
+              .map((e) => ({
+                name: String(e.name),
+                value: String(e.value ?? ""),
+              }))
+          : undefined;
+        const cwd =
+          typeof params.cwd === "string"
+            ? params.cwd
+            : typeof params.workingDirectory === "string"
+              ? params.workingDirectory
+              : this.opts.cwd;
+        const result = terminals.createAcp({
+          sessionId:
+            (params.sessionId as string) ?? this.sessionId ?? "unknown",
+          threadId: this.opts.threadId,
+          command,
+          args,
+          cwd,
+          env,
+          outputByteLimit:
+            typeof params.outputByteLimit === "number"
+              ? params.outputByteLimit
+              : undefined,
+        });
+        this.respond(id, result);
+        return;
+      }
+
+      const terminalId = String(params.terminalId ?? "");
+      if (!terminalId) {
+        this.respondError(id, `${op} requires terminalId`);
+        return;
+      }
+
+      if (op === "terminal/output") {
+        const out = terminals.getOutput(terminalId);
+        this.respond(id, {
+          output: out.output,
+          truncated: out.truncated,
+          exitStatus: out.exitStatus,
+        });
+        return;
+      }
+
+      if (op === "terminal/wait_for_exit") {
+        const status = await terminals.waitForExit(terminalId);
+        this.respond(id, status);
+        return;
+      }
+
+      if (op === "terminal/kill") {
+        terminals.kill(terminalId);
+        this.respond(id, {});
+        return;
+      }
+
+      if (op === "terminal/release") {
+        terminals.release(terminalId);
+        this.respond(id, {});
+        return;
+      }
+
+      this.respondError(id, `Unsupported terminal method: ${method}`);
+    } catch (err) {
+      this.respondError(
+        id,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 

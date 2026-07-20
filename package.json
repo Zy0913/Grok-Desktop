@@ -20,12 +20,14 @@
     "dist": "npm run build && node scripts/check-agent-bin.mjs && electron-builder",
     "dist:win": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --win",
     "dist:mac": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --mac",
-    "dist:mac:dir": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --mac dir"
+    "dist:mac:dir": "npm run build && node scripts/check-agent-bin.mjs && electron-builder --mac dir",
+    "rebuild:native": "electron-rebuild -f -w node-pty"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^22.13.10",
     "electron": "^35.0.0",
@@ -36,10 +38,13 @@
     "vitest": "^3.0.9"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "dompurify": "^3.4.12",
     "electron-liquid-glass": "^1.1.1",
     "highlight.js": "^11.11.1",
-    "marked": "^18.0.6"
+    "marked": "^18.0.6",
+    "node-pty": "^1.1.0"
   },
   "allowScripts": {
     "esbuild@0.28.1": true
@@ -54,7 +59,8 @@
     },
     "files": [
       "dist/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/node-pty/**/*"
     ],
     "extraResources": [
       {
@@ -70,6 +76,7 @@
     "asar": true,
     "asarUnpack": [
       "**/*.node",
+      "**/node-pty/**",
       "**/electron-liquid-glass/**"
     ],
     "win": {

@@ -8393,6 +8393,15 @@ function onEvent(raw: unknown): void {
     sidePane?.scheduleRefreshFileTree();
     return;
   }
+  if (
+    ev.type === "terminal.opened" ||
+    ev.type === "terminal.output" ||
+    ev.type === "terminal.exit" ||
+    ev.type === "terminal.closed"
+  ) {
+    sidePane?.onTerminalEvent(ev);
+    return;
+  }
   // 计划审批 / 模式变更：与 transcript 挂起无关（exit_plan 可在任意时机弹出）
   if (ev.type === "plan.approval.requested") {
     if (

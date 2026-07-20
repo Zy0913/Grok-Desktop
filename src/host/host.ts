@@ -47,6 +47,7 @@ import {
   type FileReadResult,
   type FileSearchHit,
 } from "./files.js";
+import { TerminalService } from "./terminal-service.js";
 import {
   authLogout,
   authStatus,
@@ -213,12 +214,16 @@ export class DesktopHost {
   readonly worktrees: WorktreeService;
   readonly automations: AutomationStore;
   readonly threadMeta: ThreadMetaStore;
+  readonly terminals: TerminalService;
 
   constructor(opts: DesktopHostOptions = {}) {
     this.home = opts.home;
     this.instance = opts.instance ?? "app";
     ensureDesktopDirs(opts.home);
     this.logger = opts.logger ?? new HostLogger(opts.home);
+    this.terminals = new TerminalService({
+      onEvent: (ev) => this.emit(ev),
+    });
     // Agent / login 一律走 Desktop GROK_HOME，与 CLI ~/.grok 隔离
     const desktopGrokHome = grokHomeDir(opts.home);
     // 强制关闭 Claude/Cursor 兼容（env 优先于 config.toml）
@@ -645,6 +650,7 @@ export class DesktopHost {
       logger: this.logger,
       threadId,
       allowFs: true,
+      terminals: this.terminals,
       onEvent: (ev) => this.onClientEvent(threadId, ev),
     });
 
@@ -656,6 +662,8 @@ export class DesktopHost {
       if (alwaysApprove) meta.yoloMode = true;
       if (thread.model) meta.modelId = thread.model;
       if (params.mode === "plan") meta.planMode = true;
+      // Desktop 可托管 ACP terminal → 对齐 CLI clientTerminal
+      meta.clientTerminal = true;
       // 对齐 agent wire：meta.reasoningEffort（low|medium|high|xhigh）
       const effort = (params.effort ?? "").toString().trim().toLowerCase();
       if (effort && ["low", "medium", "high", "xhigh"].includes(effort)) {
@@ -750,6 +758,7 @@ export class DesktopHost {
       logger: this.logger,
       threadId,
       allowFs: true,
+      terminals: this.terminals,
       onEvent: (ev) => this.onClientEvent(threadId, ev),
     });
 
@@ -2427,10 +2436,51 @@ export class DesktopHost {
     removeRemoteProject(id, this.home);
   }
 
+  // ── Terminals (ACP + user PTY) ────────────────────────────
+
+  terminalsList() {
+    return this.terminals.list();
+  }
+
+  terminalsCreateUser(input: {
+    cwd: string;
+    cols?: number;
+    rows?: number;
+    title?: string;
+  }) {
+    if (!input.cwd?.trim()) {
+      throw new HostError("INVALID_ARGUMENT", "terminals.createUser requires cwd");
+    }
+    const cwd = path.resolve(input.cwd);
+    return this.terminals.createUser({
+      cwd,
+      cols: input.cols,
+      rows: input.rows,
+      title: input.title,
+    });
+  }
+
+  terminalsWrite(terminalId: string, data: string): void {
+    this.terminals.write(terminalId, data);
+  }
+
+  terminalsResize(terminalId: string, cols: number, rows: number): void {
+    this.terminals.resize(terminalId, cols, rows);
+  }
+
+  terminalsClose(terminalId: string): void {
+    this.terminals.closeUser(terminalId);
+  }
+
+  terminalsGetOutput(terminalId: string) {
+    return this.terminals.getOutput(terminalId);
+  }
+
   async dispose(): Promise<void> {
     this.disposed = true;
     this.filesWatchStop();
     this.automations.stopAllTimers();
+    this.terminals.disposeAll();
     for (const [tid, live] of this.threads) {
       if (live.client) await live.client.close().catch(() => undefined);
       this.threads.delete(tid);

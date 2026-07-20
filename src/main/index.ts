@@ -853,6 +853,32 @@ async function handleHostIpc(
     case "remote.remove":
       host.remoteRemove(p.id as string);
       return resultOk({ removed: true });
+    case "terminals.list":
+      return resultOk(host.terminalsList());
+    case "terminals.createUser":
+      return resultOk(
+        host.terminalsCreateUser({
+          cwd: p.cwd as string,
+          cols: p.cols as number | undefined,
+          rows: p.rows as number | undefined,
+          title: p.title as string | undefined,
+        }),
+      );
+    case "terminals.write":
+      host.terminalsWrite(p.terminalId as string, String(p.data ?? ""));
+      return resultOk({ ok: true });
+    case "terminals.resize":
+      host.terminalsResize(
+        p.terminalId as string,
+        Number(p.cols) || 80,
+        Number(p.rows) || 24,
+      );
+      return resultOk({ ok: true });
+    case "terminals.close":
+      host.terminalsClose(p.terminalId as string);
+      return resultOk({ closed: true });
+    case "terminals.getOutput":
+      return resultOk(host.terminalsGetOutput(p.terminalId as string));
     default:
       throw new HostError("INVALID_ARGUMENT", `Unknown method: ${method}`);
   }

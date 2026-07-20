@@ -147,6 +147,13 @@ export type HostIpcMethod =
   | "pr.diff"
   | "remote.list"
   | "remote.add"
-  | "remote.remove";
+  | "remote.remove"
+  // Desktop terminals (ACP + user PTY)
+  | "terminals.list"
+  | "terminals.createUser"
+  | "terminals.write"
+  | "terminals.resize"
+  | "terminals.close"
+  | "terminals.getOutput";
 
 export const HOST_EVENT_CHANNEL = "grok-desktop-host-event" as const;

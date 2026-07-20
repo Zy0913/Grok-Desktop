@@ -99,27 +99,45 @@ function escHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function extLabel(p: string): string {
-  const m = /\.([a-zA-Z0-9]{1,8})$/.exec(p);
-  return (m?.[1] || "file").toUpperCase().slice(0, 3);
-}
-
 function linkHtml(ref: ParsedFileRef, resolved: string): string {
   const lineAttr = ref.line != null ? ` data-line="${ref.line}"` : "";
-  const title = ref.line
-    ? `${resolved}:${ref.line}`
-    : resolved;
+  const title = ref.line ? `${resolved}:${ref.line}` : resolved;
   const name = resolved.replace(/\\/g, "/").split("/").pop() || resolved;
-  const lineSpan =
-    ref.line != null
-      ? `<span class="chip-line">:${ref.line}</span>`
-      : "";
-  // Codex 式 pill chip
+  let label = (ref.display || name).replace(/\\/g, "/");
+  if (/^file:\/\//i.test(label) || label.length > 64) {
+    label = ref.line != null ? `${name}:${ref.line}` : name;
+  }
+  // Codex：单层内联路径链，无扩展名徽章 / pill 叠层
   return (
-    `<a href="#" class="file-link file-chip" data-file-path="${escHtml(resolved)}"${lineAttr} title="${escHtml(title)}">` +
-    `<span class="chip-ico">${escHtml(extLabel(name))}</span>` +
-    `<span class="chip-name">${escHtml(name)}</span>${lineSpan}</a>`
+    `<a href="#" class="file-link" data-file-path="${escHtml(resolved)}"${lineAttr} title="${escHtml(title)}">` +
+    `${escHtml(label)}</a>`
   );
+}
+
+/** 将仅含路径的 inline <code> 提升为 file-link，避免 code 背景叠在链接上 */
+function promoteCodePaths(root: HTMLElement, cwd?: string | null): void {
+  for (const code of Array.from(root.querySelectorAll("code"))) {
+    if (code.closest("pre, a, button, .file-link, .code-block-head")) continue;
+    const raw = (code.textContent ?? "").trim();
+    if (raw.length < 3 || /\s/.test(raw)) continue;
+
+    let ref: ParsedFileRef | null = null;
+    PATH_RE.lastIndex = 0;
+    const m = PATH_RE.exec(raw);
+    if (m && m[0] === raw) {
+      ref = parseFileRef(m[1]!, m[2], m[3]);
+    } else if (EXT_HINT.test(raw)) {
+      // 裸文件名 `anime.iife.min.js`：整段 code 升为路径链
+      ref = parseFileRef(raw);
+    }
+    if (!ref) continue;
+    ref.display = raw;
+    const resolved = resolveAgainstCwd(ref.path, cwd);
+    const wrap = document.createElement("span");
+    wrap.innerHTML = linkHtml(ref, resolved);
+    const link = wrap.firstChild;
+    if (link) code.replaceWith(link);
+  }
 }
 
 /**
@@ -130,11 +148,15 @@ export function linkifyFilePaths(
   root: HTMLElement,
   cwd?: string | null,
 ): void {
+  // 先处理整段路径的 inline code，再扫纯文本（避免 <code><a class=file-link>）
+  promoteCodePaths(root, cwd);
+
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = (node as Text).parentElement;
       if (!parent) return NodeFilter.FILTER_REJECT;
-      if (parent.closest("a, button, .file-link, .code-block-head")) {
+      // 跳过已有链接、按钮、代码块与剩余 inline code（部分匹配不嵌套）
+      if (parent.closest("a, button, .file-link, .code-block-head, pre, code")) {
         return NodeFilter.FILTER_REJECT;
       }
       const t = node.textContent ?? "";
@@ -219,13 +241,19 @@ export function linkifyFilePaths(
       }
       const resolved = resolveAgainstCwd(p, cwd);
       a.classList.add("file-link");
-      a.classList.remove("md-path-link");
+      a.classList.remove("md-path-link", "file-chip");
       a.dataset.filePath = resolved;
       if (line && Number.isFinite(line) && line > 0) {
         a.dataset.line = String(line);
       }
       a.href = "#";
       a.title = line ? `打开 ${resolved}:${line}` : `打开 ${resolved}`;
+      // Markdown `[`path`](path)` → <a><code>path</code></a>：拆掉 code 壳，只留一层链接样式
+      const onlyCode = a.childNodes.length === 1 && a.firstElementChild?.tagName === "CODE";
+      if (onlyCode) {
+        const text = a.textContent || resolved;
+        a.textContent = text;
+      }
     } catch {
       /* ignore */
     }

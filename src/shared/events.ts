@@ -180,6 +180,37 @@ export type NormalizedEvent =
       /** meta.tools 工具名集合（可选） */
       tools?: string[];
       raw?: unknown;
+    }
+  /** Desktop 托管终端（ACP terminal/* 或用户新建） */
+  | {
+      type: "terminal.opened";
+      terminalId: string;
+      kind: "acp" | "user";
+      title: string;
+      cwd: string;
+      command?: string;
+      threadId?: string;
+      sessionId?: string;
+      interactive: boolean;
+    }
+  | {
+      type: "terminal.output";
+      terminalId: string;
+      kind: "acp" | "user";
+      data: string;
+      truncated?: boolean;
+    }
+  | {
+      type: "terminal.exit";
+      terminalId: string;
+      kind: "acp" | "user";
+      exitCode: number | null;
+      signal: string | null;
+    }
+  | {
+      type: "terminal.closed";
+      terminalId: string;
+      kind: "acp" | "user";
     };
 
 /** ACP AvailableCommand 精简形态 */

@@ -17,6 +17,12 @@ for (const f of [
   fs.copyFileSync(path.join(srcRenderer, f), path.join(destRenderer, f));
 }
 
+// xterm.css（侧栏终端）
+const xtermCss = path.join(root, "node_modules", "@xterm", "xterm", "css", "xterm.css");
+if (fs.existsSync(xtermCss)) {
+  fs.copyFileSync(xtermCss, path.join(destRenderer, "xterm.css"));
+}
+
 // Preload must ship as CommonJS for Electron
 const srcPreload = path.join(root, "src", "main", "preload.cjs");
 const destMain = path.join(root, "dist", "main");

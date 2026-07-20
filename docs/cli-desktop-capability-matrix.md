@@ -141,9 +141,9 @@
 | M6 | `_meta.reasoningEffort` | 有 | 有 | ✅ |
 | M7 | `_meta.autoMode` | leader 可注入 | **未写** | ❌ |
 | M8 | `_meta.codeNavEnabled` | leader 注入 | **未写** | ❌ |
-| M9 | `_meta.clientTerminal` | 可 true → 终端回 TUI | **未写** | ❌ |
+| M9 | `_meta.clientTerminal` | 可 true → 终端回 TUI | Desktop `session/new` 写 `clientTerminal: true` | ✅ |
 | M10 | `clientCapabilities.fs` | 视客户端 | `readTextFile: true, writeTextFile: false` | 🟡 |
-| M11 | `clientCapabilities.terminal` | 可 true | **false**（`acp-client.ts`） | ❌ |
+| M11 | `clientCapabilities.terminal` | 可 true | **true** + `terminal/*`（`TerminalService`） | ✅ |
 | M12 | `GROK_CLIENT_VERSION` 等诊断 env | 部分路径有 | **未见设置** | 🟡 |
 | M13 | `GROK_HOME` | 默认 `~/.grok` | 强制 `~/.grok-desktop` | — 故意 |
 
@@ -188,7 +188,7 @@ Host 将 ACP / x.ai 通知归一为 `NormalizedEvent`（`src/host/normalize.ts` 
 | C3 | Hunk 时间线 | 有 | Host 有、UI 弱 | 🟡 | `hunkTimeline: false` 能力位 |
 | C4 | Markdown | 终端有限 | prose + highlight | D+ | |
 | C5 | Mermaid 等 | 部分 | 视进度 | 🟡 | |
-| C6 | 集成终端 | 终端即环境 | 无；ACP `terminal: false` | ❌ | 与 M11 一致 |
+| C6 | 集成终端 | 终端即环境 | 侧栏 xterm：ACP `terminal/*` + 用户 PTY | ✅ | 与 M11 一致 |
 | C7 | PR | 有限 | Host 有、UI 弱 | 🟡 | |
 
 ---
