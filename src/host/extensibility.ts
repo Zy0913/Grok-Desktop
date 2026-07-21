@@ -2,6 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { McpServerInfo, PluginInfo, SkillInfo } from "../shared/types.js";
+import type { VariantAppearance } from "../shared/theme/types.js";
+import {
+  defaultAppearance,
+  isChromeTheme,
+  isKnownCodeThemeId,
+  normalizeChromeTheme,
+} from "../shared/theme/index.js";
 import { grokHomeDir } from "./paths.js";
 
 export function listSkills(opts?: {
@@ -247,9 +254,13 @@ export function authLogout(home?: string): {
 }
 
 /** Desktop UI / defaults persisted under ~/.grok/desktop/settings.json */
-export type DesktopPermMode = "always_approve" | "normal" | "plan";
+/** 默认访问权限（不含 plan；plan 是独立会话模式） */
+export type DesktopPermMode = "always_approve" | "normal";
 /** explorer | code | cursor | codium | windsurf | editor(遗留) */
 export type DesktopOpenTarget = string;
+
+/** UI 外观；`system` 跟随 OS / Chromium prefers-color-scheme（对齐 Codex Appearance） */
+export type DesktopThemePreference = "system" | "light" | "dark";
 
 export interface DesktopConfig {
   defaultModel?: string;
@@ -265,6 +276,16 @@ export interface DesktopConfig {
    * `system` follows OS / Chromium locale; otherwise `zh-CN` | `en-US`.
    */
   locale?: "zh-CN" | "en-US" | "system";
+  /**
+   * Appearance: light / dark / follow system.
+   * Default when unset: `system`.
+   */
+  theme?: DesktopThemePreference;
+  /**
+   * 分 variant 的 chrome + codeThemeId（对齐 Codex light/darkChromeTheme）。
+   */
+  appearanceLight?: VariantAppearance;
+  appearanceDark?: VariantAppearance;
   /**
    * 跨会话 Memory（实验）：对齐 CLI `--experimental-memory` / `GROK_MEMORY`。
    * 真存储在 GROK_HOME/memory/，非 desktop/memory/entries.json。
@@ -292,17 +313,55 @@ export function readDesktopConfig(home?: string): DesktopConfig {
   }
 }
 
+function normalizeVariantAppearance(
+  raw: unknown,
+  variant: "light" | "dark",
+): VariantAppearance {
+  const fallback = defaultAppearance(variant);
+  if (!raw || typeof raw !== "object") return fallback;
+  const o = raw as Record<string, unknown>;
+  const codeThemeId =
+    typeof o.codeThemeId === "string" && o.codeThemeId.trim()
+      ? o.codeThemeId.trim()
+      : fallback.codeThemeId;
+  const chrome = isChromeTheme(o.chromeTheme)
+    ? normalizeChromeTheme(o.chromeTheme)
+    : fallback.chromeTheme;
+  // 未知 id 仍保留（导入自定义后可能改过 chrome，id 仅作标签）
+  // 历史 default → codex（内置默认预设 id）
+  const resolvedId =
+    codeThemeId === "default"
+      ? "codex"
+      : isKnownCodeThemeId(codeThemeId)
+        ? codeThemeId
+        : codeThemeId || "codex";
+  return {
+    codeThemeId: resolvedId,
+    chromeTheme: chrome,
+  };
+}
+
 /** Normalized view for UI / Host consumers. */
 export function getDesktopConfigView(home?: string): DesktopConfigView {
   const raw = readDesktopConfig(home);
+  // 历史配置可能把 plan 写进 defaultPermMode；plan 不是访问权限，回落 normal
+  const rawPerm = raw.defaultPermMode;
   const defaultPermMode: DesktopPermMode =
-    raw.defaultPermMode ??
-    (raw.alwaysApproveDefault ? "always_approve" : "normal");
+    rawPerm === "always_approve" || raw.alwaysApproveDefault
+      ? "always_approve"
+      : "normal";
+  const theme: DesktopThemePreference =
+    raw.theme === "light" || raw.theme === "dark" || raw.theme === "system"
+      ? raw.theme
+      : "system";
   return {
     ...raw,
     defaultPermMode,
     defaultOpenTarget: raw.defaultOpenTarget ?? "explorer",
     alwaysApproveDefault: defaultPermMode === "always_approve",
+    theme,
+    appearanceLight: normalizeVariantAppearance(raw.appearanceLight, "light"),
+    appearanceDark: normalizeVariantAppearance(raw.appearanceDark, "dark"),
     paths: {
       settings: path.join(desktopDirSafe(home), "settings.json"),
       configToml: path.join(grokHomeDir(home), "config.toml"),
@@ -325,6 +384,18 @@ export function writeDesktopConfig(
     next.alwaysApproveDefault = patch.defaultPermMode === "always_approve";
   } else if (patch.alwaysApproveDefault !== undefined && patch.defaultPermMode === undefined) {
     next.defaultPermMode = patch.alwaysApproveDefault ? "always_approve" : "normal";
+  }
+  if (patch.appearanceLight !== undefined) {
+    next.appearanceLight = normalizeVariantAppearance(
+      patch.appearanceLight,
+      "light",
+    );
+  }
+  if (patch.appearanceDark !== undefined) {
+    next.appearanceDark = normalizeVariantAppearance(
+      patch.appearanceDark,
+      "dark",
+    );
   }
   fs.writeFileSync(p, JSON.stringify(next, null, 2), "utf8");
   return getDesktopConfigView(home);

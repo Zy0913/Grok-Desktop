@@ -1,15 +1,42 @@
 /**
  * 对话内文件路径可点击（对齐 Codex / Claude Desktop）
  * - 识别绝对/相对路径 + :line[:col]
- * - 渲染为 .file-link，点击走 Host openInEditor / openPath
+ * - 渲染为 .file-link，点击走侧栏 openFile
+ *
+ * 规则从紧：只链「像源码/配置文件」的路径，避免把 /sessions/、phase 等
+ * 文本误当成路径按钮，点开后侧栏空空。
  */
 
-/** 匹配常见源码路径（含 Windows / Unix / 相对 + 可选行号） */
+/** 匹配候选路径（含 Windows / Unix / 相对 + 可选行号）；最终以 isLinkableFilePath 过滤 */
 const PATH_RE =
   /(?<![\w./\\@-])((?:file:\/\/\/?)?(?:[A-Za-z]:[\\/]|\/|\.\/|\.\.\/|~\/)[^\s`'"<>|*?\n]+?|[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,16})(?::(\d{1,7}))?(?::(\d{1,7}))?(?![\w./\\-])/g;
 
+/** 常见源码/配置扩展名（linkify 必须命中其一，或落在无扩展白名单） */
 const EXT_HINT =
-  /\.(ts|tsx|js|jsx|mjs|cjs|json|md|css|scss|html|vue|py|rs|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|sql|yml|yaml|toml|xml|sh|bash|zsh|ps1|bat|cmd|txt|log|env|gitignore|dockerignore|lock|gradle|proto|graphql|gql|vue|svelte)$/i;
+  /\.(ts|tsx|js|jsx|mjs|cjs|json|md|mdx|css|scss|less|html|htm|vue|svelte|py|rs|go|java|kt|kts|swift|c|cc|cpp|cxx|h|hpp|hxx|cs|rb|php|sql|yml|yaml|toml|xml|sh|bash|zsh|ps1|bat|cmd|txt|log|env|gitignore|dockerignore|lock|gradle|proto|graphql|gql|svg|png|jpg|jpeg|gif|webp|ico|wasm|map|d\.ts)$/i;
+
+/** 无扩展名但常被引用的文件名 */
+const EXTLESS_NAMES = new Set(
+  [
+    "Makefile",
+    "Dockerfile",
+    "dockerfile",
+    "LICENSE",
+    "LICENCE",
+    "COPYING",
+    "README",
+    "CHANGELOG",
+    "CHANGES",
+    "AUTHORS",
+    "CONTRIBUTING",
+    "Gemfile",
+    "Rakefile",
+    "Procfile",
+    "Vagrantfile",
+    "Jenkinsfile",
+    "CMakeLists.txt",
+  ].map((s) => s.toLowerCase()),
+);
 
 /**
  * `/goal`、`/plan`、`/status` 等 CLI slash：单段、无扩展名的「假绝对路径」。
@@ -27,30 +54,67 @@ export type ParsedFileRef = {
   display: string;
 };
 
-export function parseFileRef(match: string, line?: string, col?: string): ParsedFileRef | null {
-  let p = match.trim();
-  if (!p) return null;
-  // file:///C:/... or file:///Users/...
+function baseNameOf(p: string): string {
+  const n = p.replace(/\\/g, "/");
+  const i = n.lastIndexOf("/");
+  return i >= 0 ? n.slice(i + 1) : n;
+}
+
+/**
+ * 是否值得做成可点击文件芯片。
+ * 绝对路径也不再「放宽」：必须有扩展名或已知无扩展文件名。
+ */
+export function isLinkableFilePath(filePath: string): boolean {
+  let p = filePath.trim();
+  if (!p || p.length < 3) return false;
   if (p.startsWith("file://")) {
-    p = decodeURIComponent(p.replace(/^file:\/\/\/?/, ""));
-    // Windows file:///C:/x → C:/x
-    if (/^[A-Za-z]:\//.test(p) === false && /^[A-Za-z]\//.test(p)) {
-      // rare
+    try {
+      p = decodeURIComponent(p.replace(/^file:\/\/\/?/, ""));
+    } catch {
+      return false;
     }
   }
-  // 去掉尾部标点
+  // 去掉尾部标点与多余斜杠
+  p = p.replace(/[.,;:)+\]}>]+$/g, "");
+  if (/[\\/]$/.test(p)) return false; // 目录
+  if (p.length < 3) return false;
+
+  // URL / 伪路径：仅有一截且无扩展的 Unix 绝对路径（/sessions、/phase）
+  const unixAbsOneSeg = /^\/[^/\\]+$/.test(p);
+  if (unixAbsOneSeg && !EXT_HINT.test(p)) return false;
+
+  const name = baseNameOf(p);
+  if (!name || name === "." || name === "..") return false;
+  if (EXTLESS_NAMES.has(name.toLowerCase())) return true;
+  if (EXT_HINT.test(name) || EXT_HINT.test(p)) return true;
+
+  // 其它短扩展（.vue 已在 EXT_HINT）— 允许 1–10 位字母数字扩展，排除纯数字（版本号）
+  const extM = /\.([A-Za-z][A-Za-z0-9_-]{0,9})$/.exec(name);
+  if (extM) return true;
+
+  return false;
+}
+
+export function parseFileRef(
+  match: string,
+  line?: string,
+  col?: string,
+): ParsedFileRef | null {
+  let p = match.trim();
+  if (!p) return null;
+  if (p.startsWith("file://")) {
+    try {
+      p = decodeURIComponent(p.replace(/^file:\/\/\/?/, ""));
+    } catch {
+      return null;
+    }
+  }
   p = p.replace(/[.,;:)+\]}>]+$/g, "");
   if (p.length < 3) return null;
   // 勿把 /goal /plan 等斜杠命令当成文件
   if (isSlashCommandPath(p)) return null;
-  // 相对路径需要像文件；绝对路径放宽
-  const isAbs =
-    /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\\\");
-  if (!isAbs && !EXT_HINT.test(p) && !p.includes("/") && !p.includes("\\")) {
-    return null;
-  }
-  // 目录名误伤：无扩展且不像路径
-  if (!isAbs && !EXT_HINT.test(p) && !/[\\/]/.test(p)) return null;
+  // Upstream 路径收紧：严格挡住 /sessions、目录、纯前缀等伪路径，避免误链 FIL chip
+  if (!isLinkableFilePath(p)) return null;
 
   const ln = line ? Number(line) : undefined;
   const cn = col ? Number(col) : undefined;
@@ -68,7 +132,11 @@ export function resolveAgainstCwd(filePath: string, cwd?: string | null): string
   const useWin = Boolean(cwd && /\\/.test(cwd)) || /^[A-Za-z]:\\/.test(p);
   if (!useWin) p = filePath.replace(/\\/g, "/");
 
-  if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith("/") || filePath.startsWith("\\\\")) {
+  if (
+    /^[A-Za-z]:[\\/]/.test(filePath) ||
+    filePath.startsWith("/") ||
+    filePath.startsWith("\\\\")
+  ) {
     return filePath;
   }
   if (!cwd) return filePath;
@@ -77,9 +145,7 @@ export function resolveAgainstCwd(filePath: string, cwd?: string | null): string
   const base = cwd.replace(/[\\/]+$/, "");
   let rel = filePath;
   if (rel.startsWith("./") || rel.startsWith(".\\")) rel = rel.slice(2);
-  // .. 简单处理
   const stack = base.split(/[\\/]/).filter(Boolean);
-  // keep drive on windows
   const drive = useWin && /^[A-Za-z]:$/.test(stack[0] ?? "") ? stack.shift()! : null;
   for (const part of rel.split(/[\\/]/)) {
     if (!part || part === ".") continue;
@@ -107,7 +173,7 @@ function linkHtml(ref: ParsedFileRef, resolved: string): string {
   if (/^file:\/\//i.test(label) || label.length > 64) {
     label = ref.line != null ? `${name}:${ref.line}` : name;
   }
-  // Codex：单层内联路径链，无扩展名徽章 / pill 叠层
+  // Cursor 单层内联路径链：不再叠 FIL 徽章 chip，避免误链视觉过重
   return (
     `<a href="#" class="file-link" data-file-path="${escHtml(resolved)}"${lineAttr} title="${escHtml(title)}">` +
     `${escHtml(label)}</a>`
@@ -140,9 +206,21 @@ function promoteCodePaths(root: HTMLElement, cwd?: string | null): void {
   }
 }
 
+function shouldSkipLinkifyParent(parent: Element | null): boolean {
+  if (!parent) return true;
+  if (
+    parent.closest(
+      "a, button, .file-link, .code-block-head, pre, code, .hljs, script, style, textarea, kbd, samp",
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * 在已渲染的助手气泡内把路径变成可点击链接。
- * 跳过 a/button/已有 file-link。
+ * 跳过 a/button/code/pre/已有 file-link。
  */
 export function linkifyFilePaths(
   root: HTMLElement,
@@ -154,11 +232,8 @@ export function linkifyFilePaths(
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = (node as Text).parentElement;
-      if (!parent) return NodeFilter.FILTER_REJECT;
-      // 跳过已有链接、按钮、代码块与剩余 inline code（部分匹配不嵌套）
-      if (parent.closest("a, button, .file-link, .code-block-head, pre, code")) {
-        return NodeFilter.FILTER_REJECT;
-      }
+      // 上游收紧：一并跳过 .hljs / script / style / textarea / kbd / samp
+      if (shouldSkipLinkifyParent(parent)) return NodeFilter.FILTER_REJECT;
       const t = node.textContent ?? "";
       if (t.length < 4) return NodeFilter.FILTER_REJECT;
       PATH_RE.lastIndex = 0;
@@ -185,7 +260,6 @@ export function linkifyFilePaths(
       const col = m[3];
       const ref = parseFileRef(pathPart, line, col);
       if (!ref) continue;
-      // 还原 display 含 :line
       ref.display = full;
       const start = m.index;
       if (start > last) {
@@ -219,7 +293,12 @@ export function linkifyFilePaths(
         a.getAttribute("href") ||
         ""
       ).trim();
-      if (!href || href.startsWith("#") || /^https?:/i.test(href) || /^mailto:/i.test(href)) {
+      if (
+        !href ||
+        href.startsWith("#") ||
+        /^https?:/i.test(href) ||
+        /^mailto:/i.test(href)
+      ) {
         return;
       }
       let p = href;
@@ -239,7 +318,16 @@ export function linkifyFilePaths(
         a.replaceWith(document.createTextNode(text));
         return;
       }
+      if (!isLinkableFilePath(p)) {
+        // 伪路径：还原为普通文本样式，避免点进空侧栏
+        a.classList.remove("md-path-link");
+        a.removeAttribute("data-md-path");
+        a.removeAttribute("href");
+        a.classList.add("md-path-plain");
+        return;
+      }
       const resolved = resolveAgainstCwd(p, cwd);
+      // Cursor 视觉：单层扁平内联链，不加 file-chip 徽章
       a.classList.add("file-link");
       a.classList.remove("md-path-link", "file-chip");
       a.dataset.filePath = resolved;
@@ -274,7 +362,6 @@ export function bindFileLinkDelegate(
   root.addEventListener("click", (e) => {
     const t = e.target as HTMLElement | null;
     if (!t) return;
-    // 复制按钮不抢
     if (t.closest("[data-copy-code]")) return;
 
     const el = t.closest(

@@ -24,7 +24,11 @@ import yaml from "highlight.js/lib/languages/yaml";
 import diff from "highlight.js/lib/languages/diff";
 import plaintext from "highlight.js/lib/languages/plaintext";
 import DOMPurify from "dompurify";
-import { isSlashCommandPath, linkifyFilePaths } from "./file-links.js";
+import {
+  isLinkableFilePath,
+  isSlashCommandPath,
+  linkifyFilePaths,
+} from "./file-links.js";
 import { isDiffLanguage, renderDiffBlockHtml } from "./diff-view.js";
 
 hljs.registerLanguage("javascript", javascript);
@@ -166,17 +170,21 @@ mdRenderer.link = function linkToken({
   if (isSlashCommandPath(raw)) {
     return text;
   }
-  // file: 或相对/仓库内路径 → 标记为 md-path-link，由 linkifyFilePaths 转 file-link
+  // file: 或像真实文件的路径 → md-path-link，由 linkifyFilePaths 转 file-link
+  // 不把 /sessions/、纯目录、无扩展伪路径标成可点（避免大量 FIL 空按钮）
+  if (/^file:/i.test(raw)) {
+    return `<a href="${h}" class="md-path-link" data-md-path="${h}"${t}>${text}</a>`;
+  }
+  let checkPath = raw;
+  const lineM = /^(.+):(\d{1,7})(?::\d{1,7})?$/.exec(raw);
   if (
-    /^file:/i.test(raw) ||
-    raw.startsWith("./") ||
-    raw.startsWith("../") ||
-    (raw.startsWith("/") && !isSlashCommandPath(raw)) ||
-    /^[A-Za-z]:[\\/]/.test(raw) ||
-    /^~[/\\]/.test(raw) ||
-    /[\\/]/.test(raw) ||
-    /\.[a-zA-Z0-9]{1,16}(:\d+)?$/.test(raw)
+    lineM &&
+    !/^[A-Za-z]:[\\/]/.test(raw) &&
+    !/^[A-Za-z]:$/.test(lineM[1] ?? "")
   ) {
+    checkPath = lineM[1]!;
+  }
+  if (isLinkableFilePath(checkPath)) {
     return `<a href="${h}" class="md-path-link" data-md-path="${h}"${t}>${text}</a>`;
   }
   return `<a href="${h}"${t}>${text}</a>`;

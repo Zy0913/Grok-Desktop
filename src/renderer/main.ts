@@ -28,11 +28,19 @@ import {
   SettingsPageController,
   type SettingsOpenTarget,
   type SettingsPermMode,
+  type SettingsThemePreference,
 } from "./settings-page.js";
+import type { ThemeVariant, VariantAppearance } from "../shared/theme/types.js";
+import {
+  applyChromeTheme,
+  defaultAppearance,
+  formatCodexThemeV1,
+} from "../shared/theme/index.js";
 import { PluginsPageController } from "./plugins-page.js";
 import {
   agentAdvertisedCommands,
   getStaticSlashCommands,
+  resolveSlashCommand,
   skillCommands,
   type SlashCommandDef,
 } from "./slash-commands.js";
@@ -156,13 +164,22 @@ function setActiveCwd(cwd: string | null): void {
 }
 /** 当前 transcript 中下一条 user 消息的 prompt_index（与 agent rewind 对齐） */
 let nextUserPromptIndex = 0;
-let permMode: SettingsPermMode = "normal";
+/**
+ * 访问权限（对齐 Grok Build always-approve / default）。
+ * 与 plan 正交：plan 激活时 yolo 仍可 armed underneath。
+ */
+let accessMode: SettingsPermMode = "normal";
 /**
  * Plan 状态（对齐 CLI Pending / Active）：
  * - pending：用户开了 plan，尚未发下一条消息
  * - active：agent 已进 plan（set_mode 或 plan.mode.changed）
+ * 与 accessMode 独立，不再塞进同一个三态枚举。
  */
 let planPhase: "off" | "pending" | "active" = "off";
+
+function isPlanOn(): boolean {
+  return planPhase !== "off";
+}
 /** 当前待审批的 exit_plan_mode 请求 */
 let pendingPlanApproval: {
   requestId: string;
@@ -213,6 +230,13 @@ function effortOptions(): Array<{ id: EffortLevel; label: string }> {
 let defaultOpenTarget: SettingsOpenTarget = "explorer";
 /** UI language preference from settings (`system` | zh-CN | en-US) */
 let localePreference: LocalePreference = "system";
+/** Appearance preference（对齐 Codex Appearance：system | light | dark） */
+let themePreference: SettingsThemePreference = "system";
+/** 分 variant 的 chrome + codeThemeId */
+let appearanceLight: VariantAppearance = defaultAppearance("light");
+let appearanceDark: VariantAppearance = defaultAppearance("dark");
+let systemThemeMql: MediaQueryList | null = null;
+let systemThemeListener: ((ev: MediaQueryListEvent) => void) | null = null;
 /** Codex 可拖拽文件侧栏 */
 let sidePane: SidePaneController | null = null;
 /** Cursor：本地服务 localhost 气泡 */
@@ -368,9 +392,14 @@ let promptHistory: string[] = [];
 let promptHistoryIndex = -1;
 /** 进入 ↑ 浏览前保存的草稿 */
 let promptHistoryDraft = "";
-/** 当前 turn 开始时间（用于过程块下「已处理 Xs」） */
+/** 当前 turn 开始时间（Working for / Worked for 计时） */
 let turnStartedAt = 0;
 let turnStatusEl: HTMLElement | null = null;
+/** Codex 式时间线分隔：进行中 Working for / 结束后 Worked for */
+let turnPhaseEl: HTMLElement | null = null;
+let turnPhaseTimer: ReturnType<typeof setInterval> | null = null;
+/** 完成态状态条淡出定时器 */
+let turnStatusDoneTimer: ReturnType<typeof setTimeout> | null = null;
 let thoughtBlockEl: HTMLElement | null = null;
 let thoughtBodyEl: HTMLElement | null = null;
 /** 方案 A：工具 + goal 验证过程默认折叠 */
@@ -474,36 +503,144 @@ function updateProcessHeader(): void {
   }
 }
 
-/** 格式化为「已处理 23s」/「已处理 800ms」 */
-function formatTurnElapsed(ms: number): string {
+/** 短耗时：23s / 800ms / 1分5s */
+function formatElapsedCompact(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) ms = 0;
-  if (ms < 1000) return tr("process.elapsedMs", { n: Math.max(ms, 0) });
+  if (ms < 1000) return tr("turn.timeMs", { n: Math.max(ms, 0) });
   const sec = Math.round(ms / 1000);
-  if (sec < 60) return tr("process.elapsedSec", { n: sec });
+  if (sec < 60) return tr("turn.timeSec", { n: sec });
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return s > 0
-    ? tr("process.elapsedMinSec", { m, s })
-    : tr("process.elapsedMin", { m });
+    ? tr("turn.timeMinSec", { m, s })
+    : tr("turn.timeMin", { m });
+}
+
+/** 兼容旧 key：已处理 → 现统一走「已完成 ·」 */
+function formatTurnElapsed(ms: number): string {
+  return tr("turn.workedFor", { time: formatElapsedCompact(ms) });
+}
+
+function formatTurnWorking(ms: number): string {
+  return tr("turn.workingFor", { time: formatElapsedCompact(ms) });
+}
+
+function formatTurnStopped(ms: number): string {
+  return tr("turn.stoppedAfter", { time: formatElapsedCompact(ms) });
+}
+
+function stopTurnPhaseTimer(): void {
+  if (turnPhaseTimer != null) {
+    clearInterval(turnPhaseTimer);
+    turnPhaseTimer = null;
+  }
+}
+
+function clearTurnStatusDoneTimer(): void {
+  if (turnStatusDoneTimer != null) {
+    clearTimeout(turnStatusDoneTimer);
+    turnStatusDoneTimer = null;
+  }
 }
 
 /**
- * 在过程块下方插入「已处理 Xs」+ 分割线（对齐 Codex）
- * 同一过程块只保留一条 footer
+ * Codex：Working for {time} — 进行中分隔条，计时 live。
+ * 挂在 transcript 末尾（工具/过程之后会自然落在活动段下方）。
  */
-function paintProcessElapsedFooter(elapsedMs: number): void {
-  if (!processBlockEl?.isConnected || processItemCount <= 0) return;
-  const prev = processBlockEl.nextElementSibling;
-  if (prev?.classList.contains("turn-elapsed")) {
-    prev.remove();
+function ensureTurnPhaseWorking(): void {
+  const root = $("transcript");
+  if (!turnPhaseEl?.isConnected) {
+    const div = document.createElement("div");
+    div.className = "line turn-phase is-working";
+    div.setAttribute("role", "status");
+    div.innerHTML =
+      `<span class="turn-phase-dots" aria-hidden="true"><i></i><i></i><i></i></span>` +
+      `<span class="turn-phase-label"></span>`;
+    root.appendChild(div);
+    turnPhaseEl = div;
+  } else {
+    turnPhaseEl.classList.add("is-working");
+    turnPhaseEl.classList.remove("is-done", "is-stopped", "is-history");
+    // 工具/过程追加后仍把 Working 钉在时间线末尾
+    if (turnPhaseEl.parentElement === root && root.lastElementChild !== turnPhaseEl) {
+      root.appendChild(turnPhaseEl);
+    }
   }
+  const tick = () => {
+    if (!turnActive || !turnPhaseEl?.isConnected) return;
+    const ms = turnStartedAt > 0 ? Date.now() - turnStartedAt : 0;
+    const lab = turnPhaseEl.querySelector(".turn-phase-label");
+    const text = formatTurnWorking(ms);
+    if (lab) lab.textContent = text;
+    turnPhaseEl.setAttribute("aria-label", text);
+    // 每秒顺带把条钉回底部（tool/assistant 插入后）
+    const rootEl = $("transcript");
+    if (
+      turnPhaseEl.parentElement === rootEl &&
+      rootEl.lastElementChild !== turnPhaseEl
+    ) {
+      rootEl.appendChild(turnPhaseEl);
+    }
+  };
+  tick();
+  stopTurnPhaseTimer();
+  turnPhaseTimer = setInterval(tick, 1000);
+  scrollTranscript();
+}
+
+/**
+ * Codex：Worked for / You stopped after — 固定留在时间线。
+ * 插在过程块后，否则 transcript 末尾。
+ */
+function paintTurnPhaseDone(
+  kind: "worked" | "stopped",
+  elapsedMs: number,
+): void {
+  stopTurnPhaseTimer();
+  const label =
+    kind === "stopped"
+      ? formatTurnStopped(elapsedMs)
+      : formatTurnElapsed(elapsedMs);
+  // 复用进行中的 phase 节点，改成完成态（避免两条分隔）
+  if (turnPhaseEl?.isConnected) {
+    turnPhaseEl.classList.remove("is-working");
+    turnPhaseEl.classList.add(kind === "stopped" ? "is-stopped" : "is-done");
+    turnPhaseEl.innerHTML = `<span class="turn-phase-label">${esc(label)}</span>`;
+    turnPhaseEl.setAttribute("aria-label", label);
+    // 挪到过程块之后（若过程块在它后面插入过）
+    if (processBlockEl?.isConnected) {
+      const next = processBlockEl.nextElementSibling;
+      if (next !== turnPhaseEl) {
+        processBlockEl.insertAdjacentElement("afterend", turnPhaseEl);
+      }
+    }
+    scrollTranscript();
+    return;
+  }
+
+  // 清掉旧 footer 类名节点（兼容）
+  if (processBlockEl?.isConnected) {
+    const prev = processBlockEl.nextElementSibling;
+    if (prev?.classList.contains("turn-elapsed")) prev.remove();
+  }
+
   const foot = document.createElement("div");
-  foot.className = "line turn-elapsed";
-  foot.setAttribute("aria-label", formatTurnElapsed(elapsedMs));
-  foot.innerHTML =
-    `<div class="turn-elapsed-label">${esc(formatTurnElapsed(elapsedMs))}</div>` +
-    `<div class="turn-elapsed-rule" role="separator"></div>`;
-  processBlockEl.insertAdjacentElement("afterend", foot);
+  foot.className = `line turn-phase ${kind === "stopped" ? "is-stopped" : "is-done"}`;
+  foot.setAttribute("role", "status");
+  foot.setAttribute("aria-label", label);
+  foot.innerHTML = `<span class="turn-phase-label">${esc(label)}</span>`;
+  if (processBlockEl?.isConnected) {
+    processBlockEl.insertAdjacentElement("afterend", foot);
+  } else {
+    $("transcript").appendChild(foot);
+  }
+  turnPhaseEl = foot;
+  scrollTranscript();
+}
+
+/** @deprecated 名保留；逻辑并入 paintTurnPhaseDone */
+function paintProcessElapsedFooter(elapsedMs: number): void {
+  paintTurnPhaseDone("worked", elapsedMs);
 }
 
 function endProcessStreams(): void {
@@ -631,7 +768,10 @@ function clearTranscript(): void {
   $("transcript").innerHTML = "";
   nextUserPromptIndex = 0;
   resetStreamState(false);
+  clearTurnStatusDoneTimer();
+  stopTurnPhaseTimer();
   turnStatusEl = null;
+  turnPhaseEl = null;
   thoughtBlockEl = null;
   thoughtBodyEl = null;
   processBlockEl = null;
@@ -816,7 +956,11 @@ function bindChatScrollLayout(): void {
     const perm = document.getElementById("permission-bar");
     if (perm) ro.observe(perm);
   }
-  window.addEventListener("resize", () => syncChatComposerReserve());
+  window.addEventListener("resize", () => {
+    syncChatComposerReserve();
+    // 窗口拉伸后 fixed 菜单坐标失效，直接关闭（权限 / 模型 / +）
+    hideEphemeralMenus();
+  });
   // 显示对话 / 目标条 / 权限条显隐时再量一次
   if (chat && typeof MutationObserver !== "undefined") {
     new MutationObserver(() => {
@@ -832,6 +976,7 @@ function bindChatScrollLayout(): void {
   requestAnimationFrame(() => syncChatComposerReserve());
 }
 
+/** 空闲 / 进行中：仅由发送钮 ↑ / ■ 表达（方案 2） */
 function setComposerBusy(busy: boolean): void {
   for (const id of ["btn-send", "btn-send-chat"] as const) {
     const b = $(id);
@@ -1642,9 +1787,15 @@ function markSessionWorking(sessionId: string | null, working: boolean): void {
 }
 
 function ensureTurnStatus(label = tr("turn.thinking")): HTMLElement {
+  clearTurnStatusDoneTimer();
   if (turnStatusEl && turnStatusEl.isConnected) {
+    turnStatusEl.classList.remove("is-done", "is-stopped");
     const lab = turnStatusEl.querySelector(".status-label");
     if (lab) lab.textContent = label;
+    // 恢复进行中圆点
+    if (!turnStatusEl.querySelector(".status-dots")) {
+      turnStatusEl.innerHTML = `<span class="status-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="status-label">${esc(label)}</span>`;
+    }
     return turnStatusEl;
   }
   const el = $("transcript");
@@ -1658,19 +1809,62 @@ function ensureTurnStatus(label = tr("turn.thinking")): HTMLElement {
 }
 
 function removeTurnStatus(): void {
+  clearTurnStatusDoneTimer();
   if (turnStatusEl?.isConnected) turnStatusEl.remove();
   turnStatusEl = null;
+}
+
+/** 结束时：状态条改完成文案，短暂保留后移除（不立刻消失） */
+function promoteTurnStatusToDone(
+  label: string,
+  kind: "done" | "stopped" = "done",
+): void {
+  clearTurnStatusDoneTimer();
+  if (!turnStatusEl?.isConnected) {
+    const div = document.createElement("div");
+    div.className = `line turn-status ${kind === "stopped" ? "is-stopped" : "is-done"}`;
+    div.innerHTML = `<span class="status-check" aria-hidden="true">${kind === "stopped" ? "■" : "✓"}</span><span class="status-label">${esc(label)}</span>`;
+    $("transcript").appendChild(div);
+    turnStatusEl = div;
+  } else {
+    turnStatusEl.classList.add(kind === "stopped" ? "is-stopped" : "is-done");
+    turnStatusEl.classList.remove("is-working");
+    turnStatusEl.innerHTML = `<span class="status-check" aria-hidden="true">${kind === "stopped" ? "■" : "✓"}</span><span class="status-label">${esc(label)}</span>`;
+  }
+  scrollTranscript();
+  turnStatusDoneTimer = setTimeout(() => {
+    turnStatusDoneTimer = null;
+    if (turnStatusEl?.isConnected) {
+      turnStatusEl.classList.add("is-fading");
+      const el = turnStatusEl;
+      window.setTimeout(() => {
+        if (el.isConnected) el.remove();
+        if (turnStatusEl === el) turnStatusEl = null;
+      }, 320);
+    }
+  }, 2800);
 }
 
 function setTurnStatus(label: string): void {
   if (!turnActive) return;
   ensureTurnStatus(label);
+  // 工具名变化时同步刷新 Working for 旁的辅助信息（可选）
+  if (turnPhaseEl?.classList.contains("is-working")) {
+    const ms = turnStartedAt > 0 ? Date.now() - turnStartedAt : 0;
+    const lab = turnPhaseEl.querySelector(".turn-phase-label");
+    const text = formatTurnWorking(ms);
+    if (lab) lab.textContent = text;
+  }
 }
 
 function beginTurn(): void {
   // 先定稿并切断上一 turn 的流式指针，防止新 delta 拼进旧气泡
   resetStreamState(true);
   suppressAgentOutput = false;
+  clearTurnStatusDoneTimer();
+  stopTurnPhaseTimer();
+  // 新回合开始：上一轮 phase 留在时间线，本轮新建
+  turnPhaseEl = null;
   turnActive = true;
   lateStreamUntil = 0;
   turnStartedAt = Date.now();
@@ -1684,6 +1878,7 @@ function beginTurn(): void {
   processItemCount = 0;
   streamIsProcess = false;
   ensureTurnStatus(tr("turn.thinking"));
+  ensureTurnPhaseWorking();
   setComposerBusy(true);
   if (activeSessionId) markSessionWorking(activeSessionId, true);
 }
@@ -1693,19 +1888,26 @@ function endTurn(opts?: {
   skipQueueDrain?: boolean;
   /** 用户主动停止：不接受 late stream，并压制后续 agent 事件 */
   userCancelled?: boolean;
+  /** 对齐 Codex：正常完成 Worked for / 用户停止 You stopped after */
+  outcome?: "worked" | "stopped";
 }): void {
+  // 无活跃回合时只做清理，不画「已完成 · 0ms」（openThread/rewind 会误触）
+  const hadTurn = turnActive || turnStartedAt > 0;
   if (opts?.userCancelled) {
     suppressAgentOutput = true;
     lateStreamUntil = 0;
     // 切断 streamTurnId，避免迟到 delta 拼回气泡
     currentTurnId += 1;
     streamTurnId = -1;
-  } else {
+  } else if (hadTurn) {
     // 先放行迟到流，再关 busy；不立刻丢弃末包
     lateStreamUntil = Date.now() + 4000;
   }
+  const elapsed = turnStartedAt > 0 ? Date.now() - turnStartedAt : 0;
+  const outcome = opts?.outcome ?? (opts?.userCancelled ? "stopped" : "worked");
   turnActive = false;
-  removeTurnStatus();
+  stopTurnPhaseTimer();
+
   endProcessTextStream();
   // 折叠思考块（保留在时间线）
   if (thoughtBlockEl?.isConnected && !opts?.keepThought) {
@@ -1713,16 +1915,27 @@ function endTurn(opts?: {
     const caret = thoughtBlockEl.querySelector(".thought-caret");
     if (caret) caret.textContent = "▸";
   }
-  // 过程块默认收起 + 下方「已处理 Xs」分割线
+  // 过程块默认收起
   if (processBlockEl?.isConnected) {
     processBlockEl.classList.add("collapsed");
     const caret = processBlockEl.querySelector(".process-caret");
     if (caret) caret.textContent = "▸";
     updateProcessHeader();
-    const elapsed =
-      turnStartedAt > 0 ? Date.now() - turnStartedAt : 0;
-    paintProcessElapsedFooter(elapsed);
   }
+  if (hadTurn) {
+    // Codex：Worked for / You stopped after — 有无过程块都固定留下
+    paintTurnPhaseDone(outcome === "stopped" ? "stopped" : "worked", elapsed);
+    // 状态条：先显示完成态再淡出（不立刻消失）
+    promoteTurnStatusToDone(
+      outcome === "stopped"
+        ? formatTurnStopped(elapsed)
+        : formatTurnElapsed(elapsed),
+      outcome === "stopped" ? "stopped" : "done",
+    );
+  } else {
+    removeTurnStatus();
+  }
+
   turnStartedAt = 0;
   // 未完成的 tool 行标为结束
   Array.from(
@@ -1755,6 +1968,32 @@ function endTurn(opts?: {
   if (!opts?.skipQueueDrain) scheduleDrainPromptQueue();
 }
 
+/**
+ * P0-A：历史回放结束 — 仅弱提示「已加载历史 · N」。
+ * 空闲语义交给发送钮 ↑；勿与 Working 混淆，不写「会话空闲」。
+ */
+function paintHistoryReplayDone(entryCount: number): void {
+  removeTurnStatus();
+  stopTurnPhaseTimer();
+  // 历史不是进行中 turn，切断 phase 指针
+  if (turnPhaseEl?.classList.contains("is-working")) {
+    turnPhaseEl.remove();
+  }
+  turnPhaseEl = null;
+  turnStartedAt = 0;
+
+  if (entryCount <= 0) return;
+
+  const main = tr("history.replayDone", { n: String(entryCount) });
+  const div = document.createElement("div");
+  div.className = "line turn-phase is-history";
+  div.setAttribute("role", "status");
+  div.setAttribute("aria-label", main);
+  div.innerHTML = `<span class="turn-phase-label">${esc(main)}</span>`;
+  $("transcript").appendChild(div);
+  scrollTranscript();
+}
+
 async function cancelTurn(opts?: { clearQueue?: boolean }): Promise<void> {
   // 已压制：再发一次 cancel，避免 agent 仍在跑
   if (!turnActive && suppressAgentOutput) {
@@ -1778,7 +2017,7 @@ async function cancelTurn(opts?: { clearQueue?: boolean }): Promise<void> {
     syncPromptQueueBar();
   }
   // 先压制 UI，再发 cancel（避免窗口期内事件把 turn 拉起来）
-  endTurn({ skipQueueDrain: true, userCancelled: true });
+  endTurn({ skipQueueDrain: true, userCancelled: true, outcome: "stopped" });
   const res = await inv("turns.cancel", {
     threadId:
       activeThreadId && !activeThreadId.startsWith("disk_")
@@ -2615,8 +2854,8 @@ async function rewindToUserPrompt(
 }
 
 function permLabel(): string {
-  // 计划模式用独立 chip 标识；权限下拉只体现访问策略
-  if (permMode === "always_approve") return tr("composer.permFull");
+  // 权限 chip 只体现访问策略；plan 用独立 chip（对齐 Build）
+  if (accessMode === "always_approve") return tr("composer.permFull");
   return tr("composer.permDefault");
 }
 
@@ -2630,11 +2869,26 @@ function effortLabel(level: EffortLevel = effortLevel): string {
   return effortOptions().find((e) => e.id === level)?.label ?? level;
 }
 
-/** chip 短标：如「4.5 高」（对齐 Codex「5.5 超高」） */
+/**
+ * CLI 对齐：展示名 = catalog name（config `name` ?? `model` ?? id）。
+ * 内部切换仍用 modelLabel（id）。
+ */
+function modelDisplayName(modelId: string = modelLabel): string {
+  const id = (modelId || "grok").trim();
+  const hit = modelsCache?.find((m) => m.id === id);
+  const n = hit?.name?.trim();
+  if (n) return n;
+  return id;
+}
+
+/** chip 短标：展示名 + 推理档（对齐 CLI display name） */
 function modelChipText(): string {
-  const raw = (modelLabel || "grok").trim();
-  let short = raw;
-  if (/^grok-/i.test(raw)) short = raw.replace(/^grok-/i, "");
+  const id = (modelLabel || "grok").trim();
+  let short = modelDisplayName(id);
+  // 仅当仍显示 id 且为 grok-* slug 时剥前缀做短标
+  if (short === id && /^grok-/i.test(short)) {
+    short = short.replace(/^grok-/i, "");
+  }
   if (short.length > 18) short = short.slice(0, 16) + "…";
   return `${short} ${effortLabel()}`;
 }
@@ -2645,9 +2899,20 @@ function syncModelLabels(): void {
     const el = document.getElementById(id);
     if (el) el.textContent = v;
   }
+  const display = modelDisplayName();
+  const modelForTitle =
+    display !== (modelLabel || "").trim()
+      ? `${display} (${modelLabel})`
+      : display;
   for (const id of ["btn-model", "btn-model-2"] as const) {
     const btn = document.getElementById(id);
-    if (btn) btn.title = tr("chat.modelTitle", { model: modelLabel, effort: effortLabel(), level: effortLevel });
+    if (btn) {
+      btn.title = tr("chat.modelTitle", {
+        model: modelForTitle,
+        effort: effortLabel(),
+        level: effortLevel,
+      });
+    }
   }
 }
 
@@ -2911,7 +3176,7 @@ function applyDefaultToChip(): void {
   syncModelLabels();
 }
 
-/** 打开会话：chip 显示该会话记忆的模型（无则用默认） */
+/** 打开会话：chip 显示该会话记忆的模型（Host 已 resolve 幽灵 id；再异步校验目录） */
 function applyThreadToChip(t: {
   model?: string;
   effort?: string;
@@ -2920,6 +3185,8 @@ function applyThreadToChip(t: {
   modelLabel = m || defaultModelLabel || "grok";
   effortLevel = parseEffort(t.effort) ?? defaultEffortLevel;
   syncModelLabels();
+  // 目录可能刚删提供商：异步确认 chip 仍可选
+  void ensureChipModelAvailable({ toast: Boolean(m) });
 }
 
 /** agent 因 harness 不兼容拒绝热切换（对齐 CLI：需新会话） */
@@ -2998,13 +3265,14 @@ async function startFreshSessionWithModel(
     model: modelId,
     effort,
     maxTurns: maxTurnsLimit ?? undefined,
-    alwaysApprove: permMode === "always_approve",
-    mode:
-      permMode === "plan"
-        ? "plan"
-        : permMode === "always_approve"
-          ? "always_approve"
-          : "normal",
+    alwaysApprove: accessMode === "always_approve",
+    plan: isPlanOn(),
+    // 兼容字段：展示用派生 mode
+    mode: isPlanOn()
+      ? "plan"
+      : accessMode === "always_approve"
+        ? "always_approve"
+        : "normal",
   });
 
   if (!res.ok) {
@@ -3225,17 +3493,70 @@ function hideModelMenu(): void {
 }
 
 function modelsForMenu(list: ModelRow[]): ModelRow[] {
-  const models = list.map((m) => ({ ...m }));
-  if (modelLabel && !models.some((m) => m.id === modelLabel)) {
-    models.unshift({ id: modelLabel, name: modelLabel });
+  // 不再把「已从目录消失」的幽灵 id 塞回菜单（删提供商后的假选项）
+  return list.map((m) => ({ ...m }));
+}
+
+/** 设置 / 插件全页是否盖住主壳（此时勿 setModel、勿抢焦点） */
+function isMainShellOverlayOpen(): boolean {
+  if (settingsPage?.isOpen()) return true;
+  const plugins = document.getElementById("plugins-page");
+  if (plugins && !plugins.classList.contains("hidden")) return true;
+  return false;
+}
+
+/**
+ * chip 模型须在可选目录内；否则回退默认（对齐 CLI reselect）。
+ * @returns true = 未改动；false = 已回退
+ */
+async function ensureChipModelAvailable(opts?: {
+  toast?: boolean;
+  /** 全页设置打开时禁止 setModel（延后到 onClosed） */
+  allowSetModel?: boolean;
+}): Promise<boolean> {
+  const want = (modelLabel || "").trim();
+  const list = await fetchModelsList();
+  if (want && list.some((m) => m.id === want)) return true;
+  const prev = want || "(empty)";
+  const next =
+    (defaultModelLabel || "").trim() ||
+    list.find((m) => m.isDefault)?.id?.trim() ||
+    list[0]?.id?.trim() ||
+    "grok";
+  // 默认本身也可能已从目录消失时，再落到列表首项
+  const resolved = list.some((m) => m.id === next)
+    ? next
+    : list[0]?.id?.trim() || "grok";
+  if (resolved === want) return true;
+  modelLabel = resolved;
+  syncModelLabels();
+  // 设置/插件盖住主壳时只改 chip，不打 setModel（避免与 inert 恢复竞态）
+  const canSetModel =
+    opts?.allowSetModel !== false && !isMainShellOverlayOpen();
+  if (
+    canSetModel &&
+    activeThreadId &&
+    !activeThreadId.startsWith("disk_") &&
+    activeSessionId
+  ) {
+    void inv("threads.setModel", {
+      threadId: activeThreadId,
+      modelId: resolved,
+      effort: effortLevel,
+    }).catch(() => undefined);
   }
-  return models;
+  if (opts?.toast && want && want !== resolved && !isMainShellOverlayOpen()) {
+    showToast(tr("model.unavailableFallback", { prev, next: resolved }));
+  }
+  return false;
 }
 
 function shortModelName(id: string = modelLabel): string {
-  const raw = (id || "grok").trim();
-  let short = raw;
-  if (/^grok-/i.test(raw)) short = raw.replace(/^grok-/i, "");
+  const mid = (id || "grok").trim();
+  let short = modelDisplayName(mid);
+  if (short === mid && /^grok-/i.test(short)) {
+    short = short.replace(/^grok-/i, "");
+  }
   if (short.length > 18) short = short.slice(0, 16) + "…";
   return short;
 }
@@ -3246,6 +3567,8 @@ function fetchModelsList(): Promise<ModelRow[]> {
     .then((r) => {
       const list = r.data?.length ? r.data : FALLBACK_MODELS;
       modelsCache = list;
+      // 列表带上 display name 后刷新 chip（否则仍显示 id）
+      syncModelLabels();
       return list;
     })
     .catch(() => modelsCache ?? FALLBACK_MODELS)
@@ -3435,7 +3758,7 @@ function currentGoalTitle(): string | null {
 
 /** 输入栏红框区域：计划 / 目标状态 chip（对齐 Codex） */
 function syncSessionModeChips(): void {
-  const planOn = permMode === "plan";
+  const planOn = isPlanOn();
   const goalTitle = currentGoalTitle();
   // /goal 进入编写态即显示 chip，发送后仍显示
   const goalOn = Boolean(goalTitle) || goalComposeActive;
@@ -3461,18 +3784,21 @@ function syncSessionModeChips(): void {
 }
 
 /**
- * 同步会话 mode 到 agent。旧会话是 disk_*，必须先 attach 成 live thread，
- * 否则 Host 报 Unknown Thread: disk_…
+ * 同步访问权限 + plan 到 agent（两维正交）。
+ * 旧会话是 disk_*，必须先 attach 成 live thread。
  */
-async function setThreadModeLive(
-  mode: "plan" | "normal" | "always_approve",
-): Promise<{ ok: boolean; message?: string }> {
+async function syncSessionPolicyLive(opts?: {
+  plan?: boolean;
+  alwaysApprove?: boolean;
+}): Promise<{ ok: boolean; message?: string }> {
+  const plan = opts?.plan ?? isPlanOn();
+  const alwaysApprove =
+    opts?.alwaysApprove ?? accessMode === "always_approve";
   if (!activeSessionId && !activeThreadId) {
     // 尚无会话：仅 UI 标记，create 时带 meta
     return { ok: true };
   }
   if (!activeCwd && activeSessionId) {
-    // attach 需要 cwd；尝试从 thread 列表补
     const row = threads.find((t) => t.sessionId === activeSessionId);
     if (row?.cwd) setActiveCwd(row.cwd);
   }
@@ -3483,7 +3809,11 @@ async function setThreadModeLive(
       message: tr("mode.attachFail"),
     };
   }
-  const r = await inv("threads.setMode", { threadId, mode });
+  const r = await inv("threads.setMode", {
+    threadId,
+    plan,
+    alwaysApprove,
+  });
   if (!r.ok) {
     return {
       ok: false,
@@ -3493,12 +3823,26 @@ async function setThreadModeLive(
   return { ok: true };
 }
 
+/** @deprecated 兼容旧调用名 → 两维 sync */
+async function setThreadModeLive(
+  mode: "plan" | "normal" | "always_approve",
+): Promise<{ ok: boolean; message?: string }> {
+  if (mode === "plan") {
+    return syncSessionPolicyLive({ plan: true });
+  }
+  if (mode === "always_approve") {
+    return syncSessionPolicyLive({ plan: isPlanOn(), alwaysApprove: true });
+  }
+  // normal：仅关 plan？旧语义是整段重置。保留为关 plan + 默认确认。
+  return syncSessionPolicyLive({ plan: false, alwaysApprove: false });
+}
+
 function exitPlanMode(): void {
-  if (permMode !== "plan" && planPhase === "off") return;
-  permMode = "normal";
+  if (!isPlanOn()) return;
   planPhase = "off";
+  // 退出 plan 不碰 accessMode（Build：yolo 标记在 plan 退出后重新露出）
   syncPermLabels();
-  void setThreadModeLive("normal").then((r) => {
+  void syncSessionPolicyLive({ plan: false }).then((r) => {
     if (!r.ok) {
       showToast(r.message ?? tr("plan.exitSyncFail"), "error");
     }
@@ -3506,13 +3850,12 @@ function exitPlanMode(): void {
   showToast(tr("plan.exited"));
 }
 
-/** 开启计划模式（UI + ACP session/set_mode plan） */
+/** 开启计划模式（UI + ACP session/set_mode plan）；保留当前 accessMode */
 async function enterPlanMode(): Promise<{ ok: boolean; message?: string }> {
-  permMode = "plan";
   planPhase = "pending";
   syncPermLabels();
   if (activeSessionId || activeThreadId) {
-    const r = await setThreadModeLive("plan");
+    const r = await syncSessionPolicyLive({ plan: true });
     if (!r.ok) {
       return {
         ok: false,
@@ -3596,7 +3939,7 @@ function syncPlanPanelChrome(): void {
   }
   if (status) {
     const bits: string[] = [];
-    if (permMode === "plan") {
+    if (isPlanOn()) {
       bits.push(
         planPhase === "pending"
           ? "Pending"
@@ -3888,10 +4231,10 @@ async function respondPlanPanel(
     );
 
     if (outcome === "approved") {
+      // 退出 plan，保留 accessMode（Build：yolo 在 plan 下 armed，批准后继续）
       planPhase = "off";
-      permMode = "normal";
       syncPermLabels();
-      await setThreadModeLive("normal");
+      await syncSessionPolicyLive({ plan: false });
       setPlanPanelBusy(false);
       sidePane?.closePlanCategory();
       syncPlanPanelChrome();
@@ -3909,20 +4252,18 @@ async function respondPlanPanel(
         });
       }
     } else if (outcome === "abandoned") {
-      // 退出 plan 模式；plan.md 保留，仅 status=rejected（plans.reject / respond）
+      // 退出 plan；保留 accessMode
       planPhase = "off";
-      permMode = "normal";
       syncPermLabels();
-      await setThreadModeLive("normal");
+      await syncSessionPolicyLive({ plan: false });
       setPlanPanelBusy(false);
       sidePane?.closePlanCategory();
       syncPlanPanelChrome();
       showToast(tr("plan.abandonToast"));
       appendLine(tr("plan.abandonLine"), "system");
     } else {
-      // cancelled = 要求修改：保持 plan
+      // cancelled = 要求修改：保持 plan + accessMode
       planPhase = "active";
-      permMode = "plan";
       syncPermLabels();
       setPlanPanelBusy(false);
 
@@ -4042,7 +4383,7 @@ function notePlanArtifactFromTool(name: string | undefined, raw: unknown): void 
  * - 否则仅 toast，用户 /view-plan 或点 chip 再开
  */
 async function maybeSurfacePlanAfterTurn(): Promise<void> {
-  if (permMode !== "plan" && planPhase === "off") return;
+  if (!isPlanOn()) return;
   if (!activeSessionId) return;
   if (pendingPlanApproval) return;
 
@@ -4265,17 +4606,42 @@ function showToast(text: string, kind: "info" | "error" = "info"): void {
   }, 3200);
 }
 
+/**
+ * 发送路径：若整行是已知 slash（含 paletteHidden 如 /always-approve），本地执行不交 agent。
+ * 返回 true 表示已处理并应中止发送。
+ */
+async function tryRunComposerSlashLine(raw: string): Promise<boolean> {
+  const t = raw.trim();
+  if (!t.startsWith("/")) return false;
+  // 单 token 或 /cmd args — 先解析主命令
+  const m = t.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/);
+  if (!m) return false;
+  const name = (m[1] ?? "").toLowerCase();
+  if (!name) return false;
+  // 仅拦截桌面静态命令（skills/agent 广告仍可当 prompt 或走 palette）
+  const cmd = resolveSlashCommand(getStaticSlashCommands(), name);
+  if (!cmd) return false;
+  const ta = activeComposerInput();
+  if (ta) ta.value = "";
+  slashPalette?.hide();
+  const res = await runSlashCommand(cmd);
+  if (res.message) showToast(res.message, res.ok ? "info" : "error");
+  return true;
+}
+
 /** 仅处理会话斜杠命令（导航类走侧栏 / 顶栏 UI） */
 async function runSlashCommand(cmd: SlashCommandDef): Promise<{ ok: boolean; message?: string }> {
   const act = cmd.action;
   switch (act.kind) {
     case "set-perm":
-      // always-approve：与 CLI 一致为 toggle；与权限 chip「完全访问」同一状态
+      // always-approve：toggle 访问权限，不退出 plan（Build：yolo armed underneath）
       if (act.mode === "always_approve") {
-        if (permMode === "plan") exitPlanMode();
-        const on = permMode !== "always_approve";
-        permMode = on ? "always_approve" : "normal";
-        const sync = await setThreadModeLive(on ? "always_approve" : "normal");
+        const on = accessMode !== "always_approve";
+        accessMode = on ? "always_approve" : "normal";
+        const sync = await syncSessionPolicyLive({
+          alwaysApprove: on,
+          plan: isPlanOn(),
+        });
         syncPermLabels();
         return {
           ok: sync.ok,
@@ -4287,16 +4653,16 @@ async function runSlashCommand(cmd: SlashCommandDef): Promise<{ ok: boolean; mes
         };
       }
       if (act.mode === "plan") {
+        // /plan 再开一次：若已在 plan 则退出（toggle 感）；否则进入
+        if (isPlanOn()) {
+          exitPlanMode();
+          return { ok: true, message: tr("slash.exitPlan") };
+        }
         return enterPlanMode();
       }
-      // normal：若在 plan 中则完整退出
-      if (permMode === "plan") {
-        exitPlanMode();
-        return { ok: true, message: tr("slash.exitPlan") };
-      }
-      permMode = "normal";
-      planPhase = "off";
-      await setThreadModeLive("normal");
+      // normal：只切访问权限为默认确认，不强制退 plan
+      accessMode = "normal";
+      await syncSessionPolicyLive({ alwaysApprove: false, plan: isPlanOn() });
       syncPermLabels();
       return { ok: true, message: tr("slash.permTo", { label: permLabel() }) };
     case "view-plan":
@@ -5723,6 +6089,28 @@ async function syncGoalFromAgent(): Promise<void> {
   }
 }
 
+/**
+ * 清掉目标 UI 内存态（不弹 toast）。
+ * 用于：磁盘 cancelled/cleared、换会话、用户 clear。
+ */
+function resetGoalUiState(): void {
+  pendingGoalTitle = null;
+  activeGoalTitle = null;
+  userOptedInGoal = false;
+  goalPaused = false;
+  goalStartedAt = null;
+  goalElapsedFrozenMs = 0;
+  goalCompleted = false;
+  goalComposeActive = false;
+  if (goalCompleteHideTimer) {
+    clearTimeout(goalCompleteHideTimer);
+    goalCompleteHideTimer = null;
+  }
+  stopGoalSyncTimer();
+  stopGoalElapsedTimer();
+  setComposerPlaceholders(false);
+}
+
 function renderGoalBanner(): void {
   const title = currentGoalTitle();
   const on = Boolean(title);
@@ -5747,15 +6135,20 @@ function renderGoalBanner(): void {
     pauseBtn?.classList.toggle("hidden", goalPaused || goalCompleted);
     resumeBtn?.classList.toggle("hidden", !goalPaused || goalCompleted);
   }
-  if (on && !goalPaused && !goalCompleted) {
+  // 冷加载 active：无 goalStartedAt 时只显示冻结耗时，不假装从 updatedAt 狂跳
+  const canTick = on && !goalPaused && !goalCompleted && goalStartedAt != null;
+  if (canTick) {
     startGoalElapsedTimer();
     ensureGoalSyncTimer();
   } else {
     stopGoalElapsedTimer();
-    if (!on || goalCompleted) stopGoalSyncTimer();
+    if (on && !goalCompleted) ensureGoalSyncTimer();
+    else if (!on || goalCompleted) stopGoalSyncTimer();
     const el = formatGoalElapsed(goalElapsedMsNow());
     for (const node of Array.from(document.querySelectorAll("[data-goal-elapsed]"))) {
-      node.textContent = on ? el : "";
+      // 无起点且冻结为 0：不显示 · 0s，避免「假运行」
+      node.textContent =
+        on && (goalStartedAt != null || goalElapsedFrozenMs > 0) ? el : "";
     }
   }
   syncSessionModeChips();
@@ -5984,6 +6377,29 @@ function applyAgentGoalEvent(ev: {
     st === "completed" ||
     last === "goal_completed" ||
     last.includes("completed");
+  // CLI：cleared / cancelled / canceled 均为无目标终态
+  const isCleared =
+    st === "cancelled" ||
+    st === "canceled" ||
+    st === "cleared" ||
+    last === "goal_cleared" ||
+    last === "goal_cancelled";
+
+  // 终态 cleared：先于 opt-in / title 写入，避免空 objective 被当成 "Goal" 进行中
+  if (isCleared) {
+    const had = Boolean(currentGoalTitle() || userOptedInGoal);
+    resetGoalUiState();
+    renderGoalBanner();
+    // 磁盘同步清理，防止下次 open 再误显
+    if (activeSessionId) {
+      void inv("goals.clear", { sessionId: activeSessionId });
+    }
+    // 仅用户可见的取消才 toast；冷加载 sync 的 cleared 静默
+    if (had && (st === "cancelled" || st === "canceled") && last) {
+      showToast(tr("goal.cancelledToast"));
+    }
+    return;
+  }
 
   // agent 首启 goal：自动 opt-in（与 Host goal.json 投影对齐）
   if (!userOptedInGoal) {
@@ -5994,9 +6410,6 @@ function applyAgentGoalEvent(ev: {
       st === "user_paused" ||
       st === "paused" ||
       st === "blocked" ||
-      st === "cancelled" ||
-      st === "canceled" ||
-      st === "cleared" ||
       last.startsWith("goal_");
     if (!meaningful && !currentGoalTitle() && !goalComposeActive) {
       return;
@@ -6017,7 +6430,7 @@ function applyAgentGoalEvent(ev: {
   }
 
   if (isComplete) {
-    markGoalCompletedUi(ev.message?.trim() || title || "目标已完成");
+    markGoalCompletedUi(ev.message?.trim() || title || tr("goal.completedToast"));
     return;
   }
 
@@ -6044,22 +6457,12 @@ function applyAgentGoalEvent(ev: {
     goalPaused = true;
     goalStartedAt = null;
     showToast(ev.message?.trim() || tr("goal.blocked"), "error");
-  } else if (st === "cancelled" || st === "canceled") {
-    pendingGoalTitle = null;
-    activeGoalTitle = null;
-    userOptedInGoal = false;
-    goalPaused = false;
-    goalStartedAt = null;
-    goalElapsedFrozenMs = 0;
-    goalCompleted = false;
-    renderGoalBanner();
-    showToast(tr("goal.cancelledToast"));
-    return;
   } else {
-    // active 等
+    // active 等 — 仅 live 事件启动 wall-clock；有 elapsed_ms 时先冻结再续跑
     if (goalPaused) {
       goalStartedAt = Date.now();
     } else if (!goalStartedAt) {
+      // 有 agent 耗时：从「现在」续跑，冻结部分已记入 goalElapsedFrozenMs
       goalStartedAt = Date.now();
     }
     goalPaused = false;
@@ -6086,30 +6489,31 @@ function markGoalCompletedUi(message: string): void {
   showToast(message || tr("goal.completedToast"));
   if (goalCompleteHideTimer) clearTimeout(goalCompleteHideTimer);
   goalCompleteHideTimer = setTimeout(() => {
-    pendingGoalTitle = null;
-    activeGoalTitle = null;
-    userOptedInGoal = false;
-    goalCompleted = false;
-    goalElapsedFrozenMs = 0;
-    goalStartedAt = null;
-    goalPaused = false;
+    resetGoalUiState();
     renderGoalBanner();
   }, 8000);
 }
 
 async function pauseGoal(opts?: { fromStop?: boolean }): Promise<void> {
   if (!currentGoalTitle() || goalPaused || goalCompleted) return;
-  // 乐观更新；agent 经 /goal pause 与 goal_updated 最终确认
+  // Desktop 磁盘态为权威；冷会话 agent tracker 可能为 None
   goalElapsedFrozenMs = goalElapsedMsNow();
   goalStartedAt = null;
   goalPaused = true;
   if (activeSessionId) {
-    await inv("goals.setStatus", { sessionId: activeSessionId, status: "paused" });
+    await inv("goals.setStatus", {
+      sessionId: activeSessionId,
+      status: "paused",
+    });
   }
   renderGoalBanner();
-  showToast(opts?.fromStop ? "已停止并暂停目标" : "目标已暂停");
-  // 同源：通知 agent 暂停（CLI：/goal pause）
-  void sendAgentGoalSlash("/goal pause");
+  showToast(
+    opts?.fromStop ? tr("goal.pausedStop") : tr("goal.pausedToast"),
+  );
+  // 已 attach 时尽量通知 agent；失败不回滚 UI（避免 No goal is currently set 误伤）
+  if (activeThreadId && !activeThreadId.startsWith("disk_")) {
+    void sendAgentGoalSlash("/goal pause");
+  }
 }
 
 async function resumeGoal(): Promise<void> {
@@ -6118,10 +6522,14 @@ async function resumeGoal(): Promise<void> {
   goalCompleted = false;
   goalStartedAt = Date.now();
   if (activeSessionId) {
-    await inv("goals.setStatus", { sessionId: activeSessionId, status: "active" });
+    await inv("goals.setStatus", {
+      sessionId: activeSessionId,
+      status: "active",
+    });
   }
   renderGoalBanner();
-  showToast("目标已恢复");
+  showToast(tr("goal.resumedToast"));
+  // resume 需要 agent 真恢复编排：尽量 attach 后发送
   void sendAgentGoalSlash("/goal resume");
 }
 
@@ -6283,26 +6691,16 @@ async function runGoalCommand(
     return promptGoalBudget();
   }
   if (sub === "clear") {
-    pendingGoalTitle = null;
-    activeGoalTitle = null;
-    userOptedInGoal = false;
-    goalStartedAt = null;
-    goalElapsedFrozenMs = 0;
-    goalPaused = false;
-    goalCompleted = false;
     goalTokenBudget = null;
-    goalComposeActive = false;
-    setComposerPlaceholders(false);
-    if (goalCompleteHideTimer) {
-      clearTimeout(goalCompleteHideTimer);
-      goalCompleteHideTimer = null;
-    }
+    resetGoalUiState();
     if (activeSessionId) {
       await inv("goals.clear", { sessionId: activeSessionId });
     }
     renderGoalBanner();
-    // 同源：通知 agent 清除
-    void sendAgentGoalSlash("/goal clear");
+    // 同源：通知 agent 清除（已 attach 时）
+    if (activeThreadId && !activeThreadId.startsWith("disk_")) {
+      void sendAgentGoalSlash("/goal clear");
+    }
     return { ok: true, message: tr("goal.cleared") };
   }
   // set：不弹窗，聚焦输入框写目标
@@ -6382,11 +6780,7 @@ async function persistPendingGoal(): Promise<void> {
 async function refreshGoalChipFromSession(): Promise<void> {
   if (!activeSessionId) {
     if (!pendingGoalTitle && !goalCompleted && !goalComposeActive) {
-      activeGoalTitle = null;
-      userOptedInGoal = false;
-      goalStartedAt = null;
-      goalPaused = false;
-      goalElapsedFrozenMs = 0;
+      resetGoalUiState();
     }
     renderGoalBanner();
     return;
@@ -6399,34 +6793,46 @@ async function refreshGoalChipFromSession(): Promise<void> {
     sessionId: activeSessionId,
   });
   if (g.ok && g.data?.title) {
+    const st = String(g.data.status ?? "active").toLowerCase();
+    // cancelled / cleared：终态，不展示目标栏（修复旧会话假「进行中」）
+    if (st === "cancelled" || st === "canceled" || st === "cleared") {
+      resetGoalUiState();
+      // 顺带清脏 goal.json，避免反复误显
+      void inv("goals.clear", { sessionId: activeSessionId });
+      renderGoalBanner();
+      // 仍扫一次 agent log，兜底其它状态
+      void syncGoalFromAgent();
+      return;
+    }
     // 磁盘已有目标 = 用户曾主动设置（或历史会话）
     userOptedInGoal = true;
     // 已展示完成态时，不要被滞后的 active 磁盘状态打回
-    if (goalCompleted && g.data.status !== "completed") {
+    if (goalCompleted && st !== "completed") {
       renderGoalBanner();
       return;
     }
     activeGoalTitle = g.data.title;
-    if (g.data.status === "completed") {
+    if (st === "completed") {
       markGoalCompletedUi(g.data.title);
       return;
     }
-    goalPaused = g.data.status === "paused" || g.data.status === "blocked";
+    goalPaused = st === "paused" || st === "blocked";
+    goalCompleted = false;
     if (goalPaused) {
       goalStartedAt = null;
-    } else if (!goalStartedAt) {
-      const ts = g.data.updatedAt ? Date.parse(g.data.updatedAt) : NaN;
-      goalStartedAt = Number.isFinite(ts) ? ts : Date.now();
+      // 冷加载暂停：不伪造 wall-clock
+    } else {
+      // 冷加载 active：不要用 updatedAt 当起点（否则显示「已跑 N 天」）
+      // 等 live goal_updated / 用户 resume 再启动计时
+      goalStartedAt = null;
       goalElapsedFrozenMs = 0;
     }
   } else if (!pendingGoalTitle && !goalCompleted && !goalComposeActive) {
-    activeGoalTitle = null;
-    userOptedInGoal = false;
-    goalStartedAt = null;
-    goalPaused = false;
-    goalElapsedFrozenMs = 0;
+    resetGoalUiState();
   }
   renderGoalBanner();
+  // 打开会话后从 updates.jsonl 校准（cleared 会清 UI）
+  void syncGoalFromAgent();
 }
 
 /** 从 tool.completed raw 兜底识别 update_goal 完成 */
@@ -7182,6 +7588,8 @@ async function openThread(t: ThreadRow): Promise<void> {
     // S17：换会话重置 prompt 历史，稍后从磁盘 seed
     clearPromptHistoryStore();
     goalTokenBudget = null;
+    // 换会话先清上一会话 goal UI，再由 refresh 按磁盘恢复
+    resetGoalUiState();
   }
   activeThreadId = t.id;
   activeSessionId = t.sessionId;
@@ -7259,18 +7667,16 @@ async function openThread(t: ThreadRow): Promise<void> {
     if (!sameSession || !promptHistory.length) {
       seedPromptHistoryFromUserTexts(userTexts);
     }
-    // 与直播回合结束一致：过程块默认折叠（历史无精确耗时，不写「已处理」）
+    // 与直播回合结束一致：过程块默认折叠（历史无精确耗时，不写 Worked for）
     if (processBlockEl?.isConnected) {
       processBlockEl.classList.add("collapsed");
       const caret = processBlockEl.querySelector(".process-caret");
       if (caret) caret.textContent = "▸";
       updateProcessHeader();
     }
-    // 回放完成提示（条数）
+    // P0-A：已加载历史 + 空闲说明（非 Working，非 system 噪声行）
     const n = hist.data?.entries?.length ?? 0;
-    if (n > 0) {
-      appendLine(tr("history.replayDone", { n: String(n) }), "system");
-    }
+    paintHistoryReplayDone(n);
     await refreshProjectsAndThreads();
   } catch (err) {
     removeTurnStatus();
@@ -7421,6 +7827,8 @@ async function startNewChat(prompt?: string): Promise<void> {
     prompt ??
     ($("composer-input") as HTMLTextAreaElement).value.trim() ??
     ($("chat-input") as HTMLTextAreaElement).value.trim();
+  // 欢迎页手输 /always-approve 等：本地执行，不建空会话
+  if (!prompt && (await tryRunComposerSlashLine(raw))) return;
   const goalParse = parseGoalInput(raw);
   if (goalParse.enterComposeOnly) {
     ($("composer-input") as HTMLTextAreaElement).value = "";
@@ -7467,8 +7875,13 @@ async function startNewChat(prompt?: string): Promise<void> {
     effort: effortLevel,
     maxTurns: maxTurnsLimit ?? undefined,
     // 关键：不传 prompt，避免 Host 阻塞到 turn 结束
-    alwaysApprove: permMode === "always_approve",
-    mode: permMode === "plan" ? "plan" : permMode === "always_approve" ? "always_approve" : "normal",
+    alwaysApprove: accessMode === "always_approve",
+    plan: isPlanOn(),
+    mode: isPlanOn()
+      ? "plan"
+      : accessMode === "always_approve"
+        ? "always_approve"
+        : "normal",
   });
 
   if (!res.ok) {
@@ -7494,7 +7907,7 @@ async function startNewChat(prompt?: string): Promise<void> {
   );
 
   // Pending → Active：下一条消息进入计划 Active
-  if (permMode === "plan" && planPhase === "pending") {
+  if (planPhase === "pending") {
     planPhase = "active";
   }
   lastPlanArtifactPath = null;
@@ -7777,6 +8190,7 @@ async function sendContinue(): Promise<void> {
   // 空闲时也可 /btw；/interject 需 turn
   {
     const raw = activeComposerInput()?.value.trim() ?? "";
+    if (await tryRunComposerSlashLine(raw)) return;
     const inline = parseInlineBtwOrInterject(raw);
     if (inline?.kind === "btw") {
       const ta = activeComposerInput();
@@ -7827,7 +8241,7 @@ async function sendContinue(): Promise<void> {
     taken.goalTitle && !goalPaused ? taken.goalTitle : null,
   );
   // Pending → Active：下一条消息进入计划 Active
-  if (permMode === "plan" && planPhase === "pending") {
+  if (planPhase === "pending") {
     planPhase = "active";
   }
   lastPlanArtifactPath = null;
@@ -8155,11 +8569,11 @@ async function showAutomationsModal(): Promise<void> {
     tr("nav.automations"),
     `
     <div style="display:grid;gap:8px;margin-bottom:12px">
-      <input id="auto-name" placeholder=tr("plug.mcpName") style="padding:8px 10px;border:1px solid #e5e5e5;border-radius:8px" />
-      <select id="auto-project" style="padding:8px 10px;border:1px solid #e5e5e5;border-radius:8px">
+      <input id="auto-name" placeholder=tr("plug.mcpName") style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text)" />
+      <select id="auto-project" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text)">
         ${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.title)}</option>`).join("")}
       </select>
-      <textarea id="auto-prompt" rows="3" placeholder="定时任务指令" style="padding:8px 10px;border:1px solid #e5e5e5;border-radius:8px"></textarea>
+      <textarea id="auto-prompt" rows="3" placeholder="定时任务指令" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text)"></textarea>
       <button type="button" class="btn-dark" id="btn-auto-create">创建</button>
     </div>
     ${(list.data ?? []).map((a) => `<div class="item"><div class="item-title">${esc(a.name)} · ${esc(a.status)}</div><div class="item-sub">${esc(a.prompt)}</div>
@@ -8191,16 +8605,124 @@ async function showAutomationsModal(): Promise<void> {
   };
 }
 
+function resolveTheme(pref: SettingsThemePreference): ThemeVariant {
+  if (pref === "light" || pref === "dark") return pref;
+  try {
+    if (typeof matchMedia === "function") {
+      return matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "light";
+}
+
+function appearanceForVariant(v: ThemeVariant): VariantAppearance {
+  return v === "light" ? appearanceLight : appearanceDark;
+}
+
+function paintResolvedTheme(resolved: ThemeVariant): void {
+  const app = appearanceForVariant(resolved);
+  const isDefault = app.codeThemeId === "default" || app.codeThemeId === "codex";
+  applyChromeTheme(app.chromeTheme, resolved, {
+    isDefaultPreset: isDefault,
+  });
+  // 冷启动缓存（theme-boot 可读）
+  try {
+    localStorage.setItem("grok-desktop-theme", themePreference);
+    localStorage.setItem(
+      "grok-desktop-theme-boot",
+      JSON.stringify({
+        variant: resolved,
+        codeThemeId: app.codeThemeId,
+        chrome: app.chromeTheme,
+        isDefault,
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+  void inv("ui.setChromeTheme", { theme: resolved }).catch(() => {
+    /* older shell */
+  });
+}
+
+function bindSystemThemeListener(): void {
+  if (systemThemeMql && systemThemeListener) {
+    try {
+      systemThemeMql.removeEventListener("change", systemThemeListener);
+    } catch {
+      /* ignore */
+    }
+  }
+  systemThemeMql = null;
+  systemThemeListener = null;
+  if (themePreference !== "system") return;
+  try {
+    systemThemeMql = matchMedia("(prefers-color-scheme: dark)");
+    systemThemeListener = () => {
+      if (themePreference === "system") {
+        paintResolvedTheme(resolveTheme("system"));
+      }
+    };
+    systemThemeMql.addEventListener("change", systemThemeListener);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 应用 mode（system/light/dark）并刷新 chrome */
+function applyThemePreference(pref: SettingsThemePreference): void {
+  themePreference = pref;
+  try {
+    localStorage.setItem("grok-desktop-theme", pref);
+  } catch {
+    /* ignore */
+  }
+  paintResolvedTheme(resolveTheme(pref));
+  bindSystemThemeListener();
+}
+
+/** 写入内存中的某 variant 外观并可选立即绘制 */
+function setVariantAppearance(
+  variant: ThemeVariant,
+  app: VariantAppearance,
+  repaint: boolean,
+): void {
+  if (variant === "light") appearanceLight = app;
+  else appearanceDark = app;
+  if (repaint && resolveTheme(themePreference) === variant) {
+    paintResolvedTheme(variant);
+  }
+}
+
+/** 导出当前 resolved 变体的 codex-theme-v1 串 */
+function exportCurrentThemeString(): string {
+  const variant = resolveTheme(themePreference);
+  const app = appearanceForVariant(variant);
+  return formatCodexThemeV1({
+    codeThemeId: app.codeThemeId,
+    theme: app.chromeTheme,
+    variant,
+  });
+}
+
 function applyDesktopConfig(cfg: {
   defaultPermMode: SettingsPermMode;
   defaultModel: string;
   defaultOpenTarget: SettingsOpenTarget;
   locale?: LocalePreference;
+  theme?: SettingsThemePreference;
+  appearanceLight?: VariantAppearance;
+  appearanceDark?: VariantAppearance;
 }): void {
   // 只更新「新对话默认」；切换供应商等操作不得覆盖当前会话的权限模式 / 模型 chip
   defaultModelLabel = cfg.defaultModel || "grok";
   defaultOpenTarget = cfg.defaultOpenTarget;
-  if (cfg.locale !== undefined) {
+  // locale 仅在显式传入且相对当前有变化时刷 DOM（切换提供商不应带 locale）
+  if (cfg.locale !== undefined && cfg.locale !== localePreference) {
     localePreference = cfg.locale;
     const resolved = resolveLocale(cfg.locale, navigator.language);
     setLocale(resolved);
@@ -8210,24 +8732,73 @@ function applyDesktopConfig(cfg: {
     setComposerPlaceholders(goalComposeActive);
     syncModelLabels();
   }
+  let appearanceDirty = false;
+  if (cfg.appearanceLight) {
+    appearanceLight = cfg.appearanceLight;
+    appearanceDirty = true;
+  }
+  if (cfg.appearanceDark) {
+    appearanceDark = cfg.appearanceDark;
+    appearanceDirty = true;
+  }
+  if (cfg.theme !== undefined && cfg.theme !== themePreference) {
+    applyThemePreference(cfg.theme);
+  } else if (appearanceDirty) {
+    paintResolvedTheme(resolveTheme(themePreference));
+  }
   if (!activeSessionId) {
-    permMode = cfg.defaultPermMode;
+    accessMode =
+      cfg.defaultPermMode === "always_approve" ? "always_approve" : "normal";
     applyDefaultToChip();
     syncPermLabels();
   }
-  // 供应商列表可能已变，清掉模型菜单缓存
+  // 供应商列表可能已变，清掉模型菜单缓存并校验当前 chip
   modelsCache = null;
   modelsFetch = null;
+  // 设置仍开着：只校准 chip，禁止 setModel / toast（关页时再补）
+  void ensureChipModelAvailable({
+    toast: Boolean(activeSessionId) && !isMainShellOverlayOpen(),
+    allowSetModel: !isMainShellOverlayOpen(),
+  });
 }
 
-/** 设置页关闭后恢复主界面可输入（焦点常卡在已隐藏的设置控件上） */
+/**
+ * 强制主壳可交互（防 settings-open / inert 粘住导致无法输入）。
+ * 插件全页仍可见时只清 settings 态，保留其 inert。
+ */
+function forceMainShellInteractive(): void {
+  const app = document.getElementById("app");
+  if (!app) return;
+  app.classList.remove("settings-open");
+  document.getElementById("settings-page")?.classList.add("hidden");
+  const plugins = document.getElementById("plugins-page");
+  const pluginsVisible = Boolean(
+    plugins && !plugins.classList.contains("hidden"),
+  );
+  if (pluginsVisible) return;
+  app.classList.remove("plugins-open");
+  app.removeAttribute("aria-hidden");
+  if ("inert" in app) {
+    (app as HTMLElement & { inert: boolean }).inert = false;
+  }
+}
+
+/** 设置/插件关闭后恢复主界面可输入 */
 function restoreComposerAfterOverlay(): void {
+  forceMainShellInteractive();
   hideModelMenu();
   $("perm-menu")?.classList.add("hidden");
-  // 双 rAF：等设置页 display:none 与 inert 解除后再抢焦点
+  // 设置期间推迟的模型校验：关页后再 setModel
+  void ensureChipModelAvailable({
+    toast: Boolean(activeSessionId),
+    allowSetModel: true,
+  });
+  // 双 rAF：等 display:none 与 inert 解除后再抢焦点
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       try {
+        forceMainShellInteractive();
+        if (isMainShellOverlayOpen()) return;
         const ta = activeComposerInput();
         if (!ta || ta.disabled || ta.readOnly) return;
         ta.focus({ preventScroll: true });
@@ -8247,34 +8818,181 @@ async function showSettingsPage(): Promise<void> {
       getSelectedProjectId: () => selectedProjectId,
       onConfigApplied: applyDesktopConfig,
       onClosed: restoreComposerAfterOverlay,
+      resolveThemeVariant: () => resolveTheme(themePreference),
+      getAppearance: (v) => appearanceForVariant(v),
+      exportThemeString: () => exportCurrentThemeString(),
     });
   }
   await settingsPage.show();
+}
+
+/** 权限菜单关闭动画收尾定时器 */
+let permMenuCloseTimer: ReturnType<typeof setTimeout> | null = null;
+let permMenuOpenRaf = 0;
+
+function isPermMenuVisible(): boolean {
+  const menu = document.getElementById("perm-menu");
+  return Boolean(menu && !menu.classList.contains("hidden"));
+}
+
+/**
+ * 关闭权限菜单。
+ * @param immediate 窗口 resize 等场景跳过动画，避免残影留在原点
+ */
+function hidePermMenu(opts?: { immediate?: boolean }): void {
+  const menu = document.getElementById("perm-menu");
+  if (!menu) return;
+  if (permMenuOpenRaf) {
+    cancelAnimationFrame(permMenuOpenRaf);
+    permMenuOpenRaf = 0;
+  }
+  if (permMenuCloseTimer != null) {
+    clearTimeout(permMenuCloseTimer);
+    permMenuCloseTimer = null;
+  }
+
+  const finish = () => {
+    menu.classList.add("hidden");
+    menu.classList.remove("is-open", "open-up", "open-down");
+    delete menu.dataset.anchor;
+  };
+
+  const reduced =
+    typeof matchMedia === "function" &&
+    matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (
+    opts?.immediate ||
+    reduced ||
+    menu.classList.contains("hidden") ||
+    !menu.classList.contains("is-open")
+  ) {
+    menu.classList.remove("is-open");
+    finish();
+    return;
+  }
+
+  menu.classList.remove("is-open");
+  const onEnd = (e: TransitionEvent) => {
+    if (e.target !== menu) return;
+    if (e.propertyName !== "opacity" && e.propertyName !== "transform") return;
+    menu.removeEventListener("transitionend", onEnd);
+    if (permMenuCloseTimer != null) {
+      clearTimeout(permMenuCloseTimer);
+      permMenuCloseTimer = null;
+    }
+    finish();
+  };
+  menu.addEventListener("transitionend", onEnd);
+  // transitionend 偶发丢失时兜底
+  permMenuCloseTimer = setTimeout(() => {
+    menu.removeEventListener("transitionend", onEnd);
+    permMenuCloseTimer = null;
+    finish();
+  }, 240);
+}
+
+/** 窗口几何变化时关掉 fixed 浮层，避免锚点失效留在原点 */
+function hideEphemeralMenus(): void {
+  hidePermMenu({ immediate: true });
+  hideModelMenu();
+  hidePlusMenu();
+}
+
+function syncPermMenuActiveItem(): void {
+  const menu = document.getElementById("perm-menu");
+  if (!menu) return;
+  for (const btn of Array.from(menu.querySelectorAll<HTMLElement>("[data-mode]"))) {
+    const mode = btn.dataset.mode;
+    // 菜单只反映访问权限，与 plan 无关
+    const active =
+      mode === "always_approve"
+        ? accessMode === "always_approve"
+        : mode === "normal"
+          ? accessMode === "normal"
+          : false;
+    btn.classList.toggle("is-active", active);
+  }
 }
 
 function showPermMenu(anchor: HTMLElement): void {
   hideModelMenu();
   hidePlusMenu();
   const menu = $("perm-menu");
-  placeFloatMenu(menu, anchor, { preferAbove: true, gap: 4 });
+
+  // 再次点击同一锚点：丝滑收起
+  if (
+    isPermMenuVisible() &&
+    menu.classList.contains("is-open") &&
+    menu.dataset.anchor === anchor.id
+  ) {
+    hidePermMenu();
+    return;
+  }
+
+  if (permMenuCloseTimer != null) {
+    clearTimeout(permMenuCloseTimer);
+    permMenuCloseTimer = null;
+  }
+  if (permMenuOpenRaf) {
+    cancelAnimationFrame(permMenuOpenRaf);
+    permMenuOpenRaf = 0;
+  }
+
+  // 先无 is-open 显示以便测量真实尺寸，再 rAF 触发展开动画
+  menu.classList.remove("hidden", "is-open");
+  syncPermMenuActiveItem();
+  const r = anchor.getBoundingClientRect();
+  const mw = menu.offsetWidth || 160;
+  const mh = menu.offsetHeight || 88;
+  let left = r.left;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (left < 8) left = 8;
+  // 输入栏贴底：优先向上弹出，避免「完全访问」等项被窗口底边裁切
+  const spaceBelow = window.innerHeight - r.bottom;
+  let top: number;
+  let openUp = false;
+  if (spaceBelow < mh + 12 && r.top > mh + 12) {
+    top = Math.max(8, r.top - mh - 6);
+    openUp = true;
+  } else {
+    top = r.bottom + 4;
+    if (top + mh > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - mh - 8);
+    }
+    // 最终仍在 chip 上方则用向上动效
+    openUp = top + mh / 2 < r.top;
+  }
+  menu.classList.toggle("open-up", openUp);
+  menu.classList.toggle("open-down", !openUp);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.dataset.anchor = anchor.id;
+
+  // 强制 reflow，保证从收起态过渡到 is-open
+  void menu.offsetWidth;
+  permMenuOpenRaf = requestAnimationFrame(() => {
+    permMenuOpenRaf = 0;
+    menu.classList.add("is-open");
+  });
 }
 
 /**
- * Shift+Tab：循环会话模式（对齐 CLI）
- * normal → plan → always_approve → normal
+ * Shift+Tab：循环主展示模式（对齐 Grok Build CLI）
+ * Normal → Plan → Always-approve → Normal
+ * 注：从 Plan 到 Always-approve 会关 plan 并打开 yolo；
+ * 从 Normal 进 Plan 不改变 accessMode（yolo 可 armed underneath）。
  */
 async function cycleSessionMode(): Promise<void> {
-  if (permMode === "normal") {
+  if (!isPlanOn() && accessMode === "normal") {
     const r = await enterPlanMode();
     if (r.message) showToast(r.message, r.ok ? "info" : "error");
     return;
   }
-  if (permMode === "plan") {
-    // 退出 plan agent 侧，再切完全访问
+  if (isPlanOn()) {
     planPhase = "off";
-    permMode = "always_approve";
+    accessMode = "always_approve";
     syncPermLabels();
-    const r = await setThreadModeLive("always_approve");
+    const r = await syncSessionPolicyLive({ plan: false, alwaysApprove: true });
     if (!r.ok) {
       showToast(r.message ?? "切换完全访问失败", "error");
       return;
@@ -8282,11 +9000,11 @@ async function cycleSessionMode(): Promise<void> {
     showToast("已开启完全访问");
     return;
   }
-  // always_approve → normal
-  permMode = "normal";
+  // always_approve（非 plan）→ normal
+  accessMode = "normal";
   planPhase = "off";
   syncPermLabels();
-  void setThreadModeLive("normal");
+  void syncSessionPolicyLive({ plan: false, alwaysApprove: false });
   showToast("已恢复默认确认");
 }
 
@@ -8389,12 +9107,11 @@ async function respondPermission(
     /enter_plan|enter-plan|进入计划/i.test(low)
   ) {
     planPhase = "active";
-    permMode = "plan";
     syncPermLabels();
   }
   // 「始终允许」：同步 Desktop 侧始终批准，避免 agent 无 always option 时只相当于允许一次
-  if (decision === "allow_always" && permMode !== "always_approve") {
-    permMode = "always_approve";
+  if (decision === "allow_always" && accessMode !== "always_approve") {
+    accessMode = "always_approve";
     syncPermLabels();
     void setThreadModeLive("always_approve");
   }
@@ -8408,16 +9125,23 @@ function showPermission(requestId: string, summary: string, raw?: unknown): void
   const low = summary.toLowerCase();
   if (
     /enter_plan|enter-plan|进入计划|plan mode/i.test(low) &&
-    (permMode === "plan" || planPhase !== "off")
+    isPlanOn()
   ) {
     void inv("permissions.respond", {
       requestId,
       decision: "allow_once",
     });
     planPhase = "active";
-    permMode = "plan";
     syncPermLabels();
     if (turnActive) setTurnStatus(tr("turn.thinking"));
+    return;
+  }
+  // Host 在 always_approve 时会自动放行；此处仍可能收到事件，直接隐藏条
+  if (accessMode === "always_approve") {
+    void inv("permissions.respond", {
+      requestId,
+      decision: "allow_once",
+    }).catch(() => undefined);
     return;
   }
 
@@ -8555,14 +9279,12 @@ function onEvent(raw: unknown): void {
       return;
     }
     if (ev.active) {
-      permMode = "plan";
       // 用户 /plan 已为 pending：保持 Pending 至下一条消息；
-      // agent 主动进入时直接 Active
+      // agent 主动进入时直接 Active。不改 accessMode。
       if (planPhase === "off") planPhase = "active";
-    } else if (permMode === "plan") {
-      // agent 侧退出 plan（always_approve 走 default 时 permMode 已非 plan，不覆盖）
+    } else if (isPlanOn()) {
+      // agent 退出 plan；保留 accessMode（yolo 可重新露出）
       planPhase = "off";
-      permMode = "normal";
     }
     syncPermLabels();
     return;
@@ -8726,7 +9448,6 @@ async function handlePlanApprovalRequested(ev: {
     }
   }
   planPhase = "active";
-  permMode = "plan";
   syncPermLabels();
   await openPlanPanel({
     requestId: ev.requestId,
@@ -9026,40 +9747,36 @@ npm start</pre>
   $("btn-perm-mode").onclick = () => showPermMenu($("btn-perm-mode"));
   $("btn-perm-mode-2").onclick = () => showPermMenu($("btn-perm-mode-2"));
   document.addEventListener("click", (e) => {
-    const menu = $("perm-menu");
-    if (menu.classList.contains("hidden")) return;
+    if (!isPermMenuVisible()) return;
     if (!(e.target as HTMLElement).closest("#perm-menu, #btn-perm-mode, #btn-perm-mode-2, #btn-sandbox-setup")) {
-      menu.classList.add("hidden");
+      hidePermMenu();
     }
   });
   $("perm-menu").onclick = (e) => {
     const t = e.target as HTMLElement;
-    const mode = t.dataset.mode as typeof permMode | undefined;
-    if (!mode) return;
-    $("perm-menu").classList.add("hidden");
-    if (mode === "plan") {
-      void enterPlanMode().then((r) => {
-        if (r.message) showToast(r.message, r.ok ? "info" : "error");
+    const mode = t.dataset.mode as SettingsPermMode | "plan" | undefined;
+    if (!mode || mode === "plan") return;
+    // 选中高亮先于收起动画，关闭过程中可见反馈
+    for (const btn of Array.from($("perm-menu").querySelectorAll<HTMLElement>("[data-mode]"))) {
+      btn.classList.toggle("is-active", btn.dataset.mode === mode);
+    }
+    hidePermMenu();
+    // 权限菜单只切访问策略，绝不退出 plan
+    if (mode === "always_approve") {
+      accessMode = "always_approve";
+      syncPermLabels();
+      void syncSessionPolicyLive({
+        alwaysApprove: true,
+        plan: isPlanOn(),
       });
       return;
     }
-    if (mode === "always_approve") {
-      if (permMode === "plan") exitPlanMode();
-      permMode = "always_approve";
-      planPhase = "off";
-      syncPermLabels();
-      void setThreadModeLive("always_approve");
-      return;
-    }
-    // normal
-    if (permMode === "plan") {
-      exitPlanMode();
-      return;
-    }
-    permMode = "normal";
-    planPhase = "off";
+    accessMode = "normal";
     syncPermLabels();
-    void setThreadModeLive("normal");
+    void syncSessionPolicyLive({
+      alwaysApprove: false,
+      plan: isPlanOn(),
+    });
   };
 
   $("btn-send").onclick = () => {
@@ -9244,21 +9961,29 @@ npm start</pre>
     alwaysApproveDefault?: boolean;
     defaultOpenTarget?: SettingsOpenTarget;
     locale?: LocalePreference;
+    theme?: SettingsThemePreference;
+    appearanceLight?: VariantAppearance;
+    appearanceDark?: VariantAppearance;
   }>("config.get");
   if (cfg.data) {
     const mode =
       cfg.data.defaultPermMode ??
       (cfg.data.alwaysApproveDefault ? "always_approve" : "normal");
     const pref = (cfg.data.locale ?? "system") as LocalePreference;
+    const themePref = (cfg.data.theme ?? "system") as SettingsThemePreference;
     applyDesktopConfig({
       defaultPermMode: mode,
       defaultModel: (cfg.data.defaultModel ?? "").trim() || "grok",
       defaultOpenTarget: cfg.data.defaultOpenTarget ?? "explorer",
       locale: pref,
+      theme: themePref,
+      appearanceLight: cfg.data.appearanceLight,
+      appearanceDark: cfg.data.appearanceDark,
     });
   } else {
     setLocale(resolveLocale("system", navigator.language));
     applyDomI18n(document);
+    applyThemePreference("system");
   }
 
   onLocaleChange(() => {
@@ -9269,6 +9994,7 @@ npm start</pre>
     syncContextLabels();
     setComposerPlaceholders(goalComposeActive);
     updateProcessHeader();
+    setComposerBusy(turnActive);
     renderGoalBanner();
     setWelcomeTitle();
     void refreshProjectsAndThreads();

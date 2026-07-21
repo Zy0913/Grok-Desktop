@@ -32,6 +32,11 @@ export type UpsertProviderInput = {
   apiKey?: string;
   apiBackend?: ApiBackend;
   setAsDefault?: boolean;
+  /**
+   * 新建模式：若配置段 id 已存在则拒绝，避免「添加第二个」静默覆盖第一个。
+   * 编辑保存不传或 false。
+   */
+  createOnly?: boolean;
 };
 
 function configPath(home?: string): string {
@@ -271,6 +276,23 @@ export function listCustomProviders(home?: string): {
   };
 }
 
+/**
+ * CLI 对齐：catalog display name = config `name` ?? `model` ?? 段 id。
+ * 用于 models.list 覆盖展示名（chip / 菜单），内部切换仍用 id。
+ */
+export function modelDisplayNamesFromConfig(
+  home?: string,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const s of parseModelSections(readText(home))) {
+    const name = s.fields.name?.trim();
+    const model = s.fields.model?.trim();
+    const display = name || model || s.id;
+    if (display) map.set(s.id, display);
+  }
+  return map;
+}
+
 export function upsertCustomProvider(
   input: UpsertProviderInput,
   home?: string,
@@ -290,6 +312,12 @@ export function upsertCustomProvider(
 
   let text = readText(home);
   const existing = parseModelSections(text).find((s) => s.id === id);
+  if (input.createOnly && existing) {
+    throw new HostError(
+      "INVALID_ARGUMENT",
+      `配置段 id「${id}」已存在，请更换「显示名称（配置段）」后再添加`,
+    );
+  }
   const prevKey = existing?.fields.api_key ?? "";
   const nextKey =
     input.apiKey === undefined || input.apiKey === ""

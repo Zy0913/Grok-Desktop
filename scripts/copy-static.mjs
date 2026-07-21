@@ -13,8 +13,12 @@ for (const f of [
   "styles.css",
   "styles-glass.css",
   "styles-mac.css",
+  "theme-boot.js",
 ]) {
-  fs.copyFileSync(path.join(srcRenderer, f), path.join(destRenderer, f));
+  const from = path.join(srcRenderer, f);
+  if (fs.existsSync(from)) {
+    fs.copyFileSync(from, path.join(destRenderer, f));
+  }
 }
 
 // xterm.css（侧栏终端）

@@ -13,6 +13,7 @@ import type {
   HunkTimelineEntry,
   InboxItem,
   ModelInfo,
+  AccessMode,
   PermissionDecision,
   PlanState,
   Project,
@@ -101,6 +102,7 @@ import {
 import {
   listCustomProviders,
   listRemoteModels,
+  modelDisplayNamesFromConfig,
   pingProvider,
   removeCustomProvider,
   setDefaultModelId,
@@ -347,17 +349,39 @@ export class DesktopHost {
 
   providersUpsert(input: UpsertProviderInput) {
     const res = upsertCustomProvider(input, this.home);
+    this.modelsListCache = null;
     this.logger.info("providers.upsert", { id: input.id });
     return res;
   }
 
   providersRemove(id: string) {
     const res = removeCustomProvider(id, this.home);
-    this.logger.info("providers.remove", { id });
-    return res;
+    // 模型目录已变，作废缓存
+    this.modelsListCache = null;
+    const sid = (id ?? "").trim().toLowerCase();
+    const fallback = (res.defaultModel ?? "grok").trim() || "grok";
+    // 磁盘 meta：会话仍记着已删 provider id → 改回默认（对齐 CLI reselect）
+    const remapped = this.threadMeta.remapModels(
+      (m) => m.trim().toLowerCase() === sid,
+      fallback,
+    );
+    // 内存 live 线程同步
+    for (const live of this.threads.values()) {
+      const m = live.thread.model?.trim();
+      if (m && m.toLowerCase() === sid) {
+        live.thread.model = fallback;
+      }
+    }
+    this.logger.info("providers.remove", {
+      id,
+      fallback,
+      remappedSessions: remapped.updated,
+    });
+    return { ...res, remappedSessions: remapped.updated };
   }
 
   providersSetDefault(modelId: string) {
+    this.modelsListCache = null;
     return setDefaultModelId(modelId, this.home);
   }
 
@@ -385,9 +409,10 @@ export class DesktopHost {
     defaultModel?: string;
     grokPathOverride?: string;
     alwaysApproveDefault?: boolean;
-    defaultPermMode?: "always_approve" | "normal" | "plan";
+    defaultPermMode?: "always_approve" | "normal";
     defaultOpenTarget?: string;
     locale?: "zh-CN" | "en-US" | "system";
+    theme?: "system" | "light" | "dark";
   }) {
     const view = writeDesktopConfig(patch, this.home);
     if (patch.grokPathOverride !== undefined) {
@@ -478,6 +503,7 @@ export class DesktopHost {
           parentSessionId = parentSessionId ?? diskMeta.parentSessionId;
         }
       }
+      const rawModel = liveHit?.model ?? smeta.model;
       out.push({
         id: r.threadId ?? `disk_${r.sessionId}`,
         sessionId: r.sessionId,
@@ -485,7 +511,8 @@ export class DesktopHost {
         title: sanitizeListTitle(customTitle || r.title),
         cwd: r.cwd,
         status: r.status,
-        model: liveHit?.model ?? smeta.model,
+        // 展示/回填用「仍可用」的模型；幽灵 id 回退默认（不改写历史消息）
+        model: this.resolveAvailableModel(rawModel),
         effort: liveHit?.effort ?? smeta.effort,
         pinned: r.pinned,
         archived,
@@ -619,10 +646,14 @@ export class DesktopHost {
     }
 
     const cfg = this.configGet();
+    // 两维：访问权限 × plan（对齐 Grok Build；可同时 true）
     const alwaysApprove =
       params.alwaysApprove === true ||
       params.mode === "always_approve" ||
       cfg.alwaysApproveDefault === true;
+    const planActive =
+      params.plan === true || params.mode === "plan";
+    const accessMode: AccessMode = alwaysApprove ? "always_approve" : "normal";
 
     const threadId = `thread_${randomUUID()}`;
     const title = params.title ?? params.prompt?.slice(0, 80) ?? "New Thread";
@@ -636,7 +667,9 @@ export class DesktopHost {
       cwd,
       status: "idle",
       model: params.model ?? cfg.defaultModel,
-      mode: params.mode ?? (alwaysApprove ? "always_approve" : "normal"),
+      accessMode,
+      planActive,
+      mode: deriveSessionMode(accessMode, planActive),
       worktreeId,
       createdAt: now,
       updatedAt: now,
@@ -659,9 +692,10 @@ export class DesktopHost {
     try {
       await client.start();
       const meta: Record<string, unknown> = {};
+      // Build：yolo 可在 plan 底下保持 armed
       if (alwaysApprove) meta.yoloMode = true;
       if (thread.model) meta.modelId = thread.model;
-      if (params.mode === "plan") meta.planMode = true;
+      if (planActive) meta.planMode = true;
       // Desktop 可托管 ACP terminal → 对齐 CLI clientTerminal
       meta.clientTerminal = true;
       // 对齐 agent wire：meta.reasoningEffort（low|medium|high|xhigh）
@@ -692,8 +726,8 @@ export class DesktopHost {
       });
       if (worktreeId) this.worktrees.bindSession(worktreeId, sessionId);
 
-      // planMode meta  alone 不够：显式 session/set_mode，对齐 CLI /plan 激活
-      if (params.mode === "plan") {
+      // planMode meta alone 不够：显式 session/set_mode，对齐 CLI /plan 激活
+      if (planActive) {
         try {
           await client.setSessionMode("plan");
         } catch (err) {
@@ -763,6 +797,11 @@ export class DesktopHost {
     });
 
     const smeta = this.threadMeta.get(sessionId);
+    const resolvedModel = this.resolveAvailableModel(smeta.model);
+    // 幽灵 model 写回 meta，避免下次仍读到已删 id
+    if (smeta.model && smeta.model !== resolvedModel) {
+      this.threadMeta.setSessionModel(sessionId, { model: resolvedModel });
+    }
     const thread: Thread =
       this.threads.get(threadId)?.thread ??
       ({
@@ -771,12 +810,12 @@ export class DesktopHost {
         title: `Resume ${sessionId.slice(0, 8)}`,
         cwd: resolvedCwd,
         status: "idle",
-        model: smeta.model,
+        model: resolvedModel,
         effort: smeta.effort,
         createdAt: now,
         updatedAt: now,
       } satisfies Thread);
-    if (smeta.model) thread.model = smeta.model;
+    thread.model = resolvedModel;
     if (smeta.effort) thread.effort = smeta.effort;
 
     this.threads.set(threadId, { thread, client, writable: true });
@@ -1013,33 +1052,69 @@ export class DesktopHost {
   }
 
   /**
-   * 切换会话模式（plan / always_approve / normal）。
-   * plan ↔ default 走 ACP session/set_mode；本地 thread.mode 同步更新。
+   * 更新会话策略（对齐 Grok Build 两维模型）。
+   * - `plan`：ACP session/set_mode plan|default
+   * - `alwaysApprove`：本地 armed 标志；Host 对 permission.requested 自动放行
+   * - 二者正交，可同时为 true（yolo armed underneath plan）
+   *
+   * 兼容旧调用：`mode: SessionMode` 仍可传，会映射到两维（会清掉未表达的维）。
    */
-  async threadsSetMode(threadId: string, mode: SessionMode): Promise<Thread> {
+  async threadsSetMode(
+    threadId: string,
+    modeOrPatch:
+      | SessionMode
+      | {
+          mode?: SessionMode;
+          alwaysApprove?: boolean;
+          plan?: boolean;
+        },
+  ): Promise<Thread> {
     const live = this.threads.get(threadId);
     if (!live) throw new HostError("SESSION_NOT_FOUND", `Unknown Thread: ${threadId}`);
-    live.thread.mode = mode;
+
+    const patch =
+      typeof modeOrPatch === "string"
+        ? legacyModeToPatch(modeOrPatch)
+        : modeOrPatch.mode !== undefined &&
+            modeOrPatch.alwaysApprove === undefined &&
+            modeOrPatch.plan === undefined
+          ? legacyModeToPatch(modeOrPatch.mode)
+          : modeOrPatch;
+
+    let access: AccessMode =
+      live.thread.accessMode ??
+      (live.thread.mode === "always_approve" ? "always_approve" : "normal");
+    let planActive = live.thread.planActive ?? live.thread.mode === "plan";
+
+    if (patch.alwaysApprove !== undefined) {
+      access = patch.alwaysApprove ? "always_approve" : "normal";
+    }
+    if (patch.plan !== undefined) {
+      planActive = patch.plan;
+    }
+
+    live.thread.accessMode = access;
+    live.thread.planActive = planActive;
+    live.thread.mode = deriveSessionMode(access, planActive);
     live.thread.updatedAt = new Date().toISOString();
-    if (live.client && live.writable) {
+
+    if (live.client && live.writable && patch.plan !== undefined) {
       try {
-        if (mode === "plan") {
-          await live.client.setSessionMode("plan");
-        } else {
-          // normal / always_approve 在 agent 侧都是 default prompt mode；
-          // always-approve 另由权限策略处理
-          await live.client.setSessionMode("default");
-        }
+        await live.client.setSessionMode(planActive ? "plan" : "default");
       } catch (err) {
         this.logger.warn("threads.setMode_acp_failed", {
           threadId,
-          mode,
+          planActive,
           err: err instanceof Error ? err.message : String(err),
         });
-        // 仍返回本地 mode，UI 可继续；下次 create 会带 meta
       }
     }
-    this.logger.info("threads.setMode", { threadId, mode });
+    this.logger.info("threads.setMode", {
+      threadId,
+      accessMode: access,
+      planActive,
+      mode: live.thread.mode,
+    });
     return { ...live.thread };
   }
 
@@ -2187,6 +2262,42 @@ export class DesktopHost {
   /** `grok models` 结果缓存，避免每次点 chip 都 spawn */
   private modelsListCache: { at: number; list: ModelInfo[] } | null = null;
 
+  /** 当前全局默认模型 id（config / grok models / 内置） */
+  defaultModelId(): string {
+    const fromToml = listCustomProviders(this.home).defaultModel?.trim();
+    if (fromToml) return fromToml;
+    const list = this.modelsList();
+    const hit = list.find((m) => m.isDefault)?.id?.trim();
+    if (hit) return hit;
+    return list[0]?.id?.trim() || "grok";
+  }
+
+  /** 模型 id 是否仍在 catalog / 自定义提供商配置中 */
+  isModelAvailable(modelId: string | undefined | null): boolean {
+    const id = (modelId ?? "").trim();
+    if (!id) return false;
+    const list = this.modelsList();
+    if (list.some((m) => m.id === id)) return true;
+    // grok models 偶发漏列时：config 里仍有该 [model.id] 也算可用
+    try {
+      const { providers } = listCustomProviders(this.home);
+      if (providers.some((p) => p.id === id)) return true;
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+
+  /**
+   * 对齐 CLI reselect_current_model_if_missing：
+   * 已存 model 不在目录 → 回退默认（展示/发送用）。
+   */
+  resolveAvailableModel(modelId: string | undefined | null): string {
+    const id = (modelId ?? "").trim();
+    if (id && this.isModelAvailable(id)) return id;
+    return this.defaultModelId();
+  }
+
   /** 列出可用模型（`grok models`；失败时回退内置表；默认缓存 5 分钟） */
   modelsList(opts?: { force?: boolean }): ModelInfo[] {
     const ttlMs = 5 * 60_000;
@@ -2198,6 +2309,36 @@ export class DesktopHost {
       return this.modelsListCache.list;
     }
     const list = this.modelsListUncached();
+    // 合并自定义提供商 + 用 config 覆盖展示名（对齐 CLI：name ?? model ?? id）
+    try {
+      const { providers, defaultModel } = listCustomProviders(this.home);
+      const names = modelDisplayNamesFromConfig(this.home);
+      for (const p of providers) {
+        const display =
+          (p.name || p.model || p.id).trim() || p.id;
+        const hit = list.find((m) => m.id === p.id);
+        if (hit) {
+          hit.name = display;
+          if (defaultModel === p.id) hit.isDefault = true;
+        } else {
+          list.push({
+            id: p.id,
+            name: display,
+            isDefault: defaultModel === p.id,
+          });
+        }
+      }
+      // 非 base_url 的 [model.*] 段也写 name（若有）
+      for (const [id, display] of names) {
+        const hit = list.find((m) => m.id === id);
+        if (hit) {
+          // 自定义提供商已用 p.name 写过；此处补全仅 name/model 的段
+          if (!hit.name || hit.name === hit.id) hit.name = display;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
     this.modelsListCache = { at: Date.now(), list };
     return list;
   }
@@ -2508,15 +2649,45 @@ export class DesktopHost {
       live.thread.updatedAt = new Date().toISOString();
     }
     if (ev.type === "permission.requested" && live) {
-      this.inbox.add({
-        type: "permission",
-        title: "Permission required",
-        body: ev.summary,
-        sessionId: ev.sessionId,
-        threadId,
-        requestId: ev.requestId,
-        projectId: live.thread.projectId,
-      });
+      // Build：always-approve 可在 plan 底下 armed；非 edit 类由 agent/yolo 或此处代批
+      const yolo =
+        live.thread.accessMode === "always_approve" ||
+        live.thread.mode === "always_approve";
+      if (yolo && live.client) {
+        try {
+          live.client.respondPermission(ev.requestId, "allow_once");
+          this.logger.info("permission.auto_approved", {
+            threadId,
+            requestId: ev.requestId,
+            planActive: live.thread.planActive,
+          });
+          // 仍下发事件供 UI 可选展示，但不进 Inbox 打扰
+        } catch (err) {
+          this.logger.warn("permission.auto_approve_failed", {
+            threadId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+          this.inbox.add({
+            type: "permission",
+            title: "Permission required",
+            body: ev.summary,
+            sessionId: ev.sessionId,
+            threadId,
+            requestId: ev.requestId,
+            projectId: live.thread.projectId,
+          });
+        }
+      } else {
+        this.inbox.add({
+          type: "permission",
+          title: "Permission required",
+          body: ev.summary,
+          sessionId: ev.sessionId,
+          threadId,
+          requestId: ev.requestId,
+          projectId: live.thread.projectId,
+        });
+      }
     }
     if (ev.type === "session.available_commands" && live) {
       live.availableCommands = ev.commands;
@@ -2652,4 +2823,20 @@ export class DesktopHost {
     if (err instanceof Error) return new HostError("INTERNAL", err.message);
     return new HostError("INTERNAL", String(err));
   }
+}
+
+/** plan 优先展示；否则为 access（对齐 Build 状态条） */
+function deriveSessionMode(access: AccessMode, planActive: boolean): SessionMode {
+  if (planActive) return "plan";
+  return access;
+}
+
+/** 旧三态 mode → 两维 patch（会同时设定两维） */
+function legacyModeToPatch(mode: SessionMode): {
+  alwaysApprove: boolean;
+  plan: boolean;
+} {
+  if (mode === "plan") return { alwaysApprove: false, plan: true };
+  if (mode === "always_approve") return { alwaysApprove: true, plan: false };
+  return { alwaysApprove: false, plan: false };
 }

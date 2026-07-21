@@ -4,6 +4,18 @@
 import type { HostIpcMethod } from "../shared/host-api.js";
 import { tr, type LocalePreference } from "../shared/i18n/index.js";
 import { sfIcon, type SfIconName } from "./sf-icons.js";
+import type {
+  ThemeVariant,
+  VariantAppearance,
+} from "../shared/theme/types.js";
+import {
+  ThemeCodecError,
+  appearanceFromPreset,
+  assertVariantMatch,
+  isKnownCodeThemeId,
+  parseCodexThemeV1,
+  presetsForVariant,
+} from "../shared/theme/index.js";
 
 type Inv = <T>(method: HostIpcMethod, params?: unknown) => Promise<{
   ok: boolean;
@@ -11,9 +23,12 @@ type Inv = <T>(method: HostIpcMethod, params?: unknown) => Promise<{
   error?: { message?: string };
 }>;
 
-export type SettingsPermMode = "always_approve" | "normal" | "plan";
+/** 默认访问权限；plan 不再作为「权限」默认项（对齐 Grok Build 两维模型） */
+export type SettingsPermMode = "always_approve" | "normal";
 /** explorer | code | cursor | codium | windsurf | editor(遗留) */
 export type SettingsOpenTarget = string;
+/** Appearance: follow OS or force light/dark（对齐 Codex Appearance） */
+export type SettingsThemePreference = "system" | "light" | "dark";
 
 export interface DesktopConfigData {
   defaultModel?: string;
@@ -23,6 +38,10 @@ export interface DesktopConfigData {
   defaultOpenTarget?: SettingsOpenTarget;
   /** UI language preference */
   locale?: LocalePreference;
+  /** Appearance preference */
+  theme?: SettingsThemePreference;
+  appearanceLight?: VariantAppearance;
+  appearanceDark?: VariantAppearance;
   paths?: {
     settings: string;
     configToml: string;
@@ -38,15 +57,24 @@ export interface SettingsPageCallbacks {
     defaultPermMode: SettingsPermMode;
     defaultModel: string;
     defaultOpenTarget: SettingsOpenTarget;
+    /** 仅 locale/theme 真变更时传入，避免切换提供商时整页 applyDomI18n */
     locale?: LocalePreference;
+    theme?: SettingsThemePreference;
+    appearanceLight?: VariantAppearance;
+    appearanceDark?: VariantAppearance;
   }) => void;
   /** 关闭设置页后（恢复主界面交互 / 焦点） */
   onClosed?: () => void;
   esc: (s: string) => string;
+  /** 当前 resolved 变体（system 跟 OS） */
+  resolveThemeVariant: () => ThemeVariant;
+  getAppearance: (variant: ThemeVariant) => VariantAppearance;
+  exportThemeString: () => string;
 }
 
 type SectionId =
   | "general"
+  | "appearance"
   | "account"
   | "memory"
   | "shortcuts"
@@ -64,6 +92,44 @@ type CustomProviderRow = {
   isDefault: boolean;
 };
 
+/** 密码框眼睛：闭眼 = 隐藏中（点一下显示）；睁眼 = 明文中（点一下隐藏） */
+const KEY_EYE_HIDDEN_SVG =
+  `<svg class="settings-key-eye-ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const KEY_EYE_VISIBLE_SVG =
+  `<svg class="settings-key-eye-ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
+/** Base64（含 url-safe）→ UTF-8 可打印文本；失败返回 ok:false */
+function decodeBase64ToPrintableText(
+  raw: string,
+): { ok: true; text: string } | { ok: false } {
+  let s = raw.trim().replace(/\s+/g, "");
+  s = s.replace(/^data:[^;]+;base64,/i, "");
+  // URL-safe Base64
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4 !== 0) s += "=";
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(s) || s.length < 4) {
+    return { ok: false };
+  }
+  try {
+    const bin = atob(s);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trim();
+    if (!text || text.length < 1) return { ok: false };
+    // 拒绝大量替换字符或控制符（除常见空白）
+    let bad = 0;
+    for (const ch of text) {
+      const c = ch.codePointAt(0) ?? 0;
+      if (c === 0xfffd || (c < 32 && c !== 9 && c !== 10 && c !== 13)) bad++;
+    }
+    if (bad > Math.max(2, text.length * 0.05)) return { ok: false };
+    if (text === raw.trim()) return { ok: false };
+    return { ok: true, text };
+  } catch {
+    return { ok: false };
+  }
+}
+
 function settingsSections(): Array<{
   id: SectionId;
   group: string;
@@ -78,6 +144,13 @@ function settingsSections(): Array<{
       label: tr("settings.section.general"),
       icon: "settings",
       keywords: tr("settings.kw.general"),
+    },
+    {
+      id: "appearance",
+      group: tr("settings.group.personal"),
+      label: tr("settings.section.appearance"),
+      icon: "circleDot",
+      keywords: tr("settings.kw.appearance"),
     },
     {
       id: "account",
@@ -128,6 +201,8 @@ export class SettingsPageController {
     string,
     { ok: boolean; latencyMs: number; error?: string } | "loading"
   > = {};
+  /** 已占用的配置段 id（新建时避重） */
+  private existingProviderIds: string[] = [];
 
   constructor(private readonly cb: SettingsPageCallbacks) {
     this.bindShell();
@@ -168,9 +243,17 @@ export class SettingsPageController {
     document.getElementById("settings-page")?.classList.add("hidden");
     const app = document.getElementById("app");
     app?.classList.remove("settings-open");
-    app?.removeAttribute("aria-hidden");
-    if (app && "inert" in app) {
-      (app as HTMLElement & { inert: boolean }).inert = false;
+    const plugins = document.getElementById("plugins-page");
+    const pluginsVisible = Boolean(
+      plugins && !plugins.classList.contains("hidden"),
+    );
+    // 插件全页仍开着时保留 inert；否则恢复主壳
+    if (!pluginsVisible) {
+      app?.classList.remove("plugins-open");
+      app?.removeAttribute("aria-hidden");
+      if (app && "inert" in app) {
+        (app as HTMLElement & { inert: boolean }).inert = false;
+      }
     }
     this.cb.onClosed?.();
   }
@@ -244,20 +327,53 @@ export class SettingsPageController {
     const res = await this.cb.inv<DesktopConfigData>("config.patch", partial);
     if (res.ok && res.data) this.cfg = res.data;
     else await this.reloadConfig();
-    this.applyToApp();
+    // 只把本次 patch 涉及的 locale/theme 推给主界面，避免「设默认提供商」触发整页 i18n
+    this.applyToApp({
+      pushLocale: partial.locale !== undefined,
+      pushTheme: partial.theme !== undefined,
+    });
   }
 
-  private applyToApp(): void {
+  /**
+   * 将配置同步到主界面。
+   * 切换/删除提供商时不要带 locale/theme，否则 applyDomI18n(document) 在 #app.inert 下易导致关设置后无法输入。
+   */
+  private applyToApp(opts?: {
+    pushLocale?: boolean;
+    pushTheme?: boolean;
+    pushAppearance?: boolean;
+  }): void {
     const mode = this.cfg.defaultPermMode ?? "normal";
     const model = (this.cfg.defaultModel ?? "").trim() || "grok";
     const openTarget = this.cfg.defaultOpenTarget ?? "explorer";
-    const locale = this.cfg.locale ?? "system";
-    this.cb.onConfigApplied({
+    const payload: {
+      defaultPermMode: SettingsPermMode;
+      defaultModel: string;
+      defaultOpenTarget: SettingsOpenTarget;
+      locale?: LocalePreference;
+      theme?: SettingsThemePreference;
+      appearanceLight?: VariantAppearance;
+      appearanceDark?: VariantAppearance;
+    } = {
       defaultPermMode: mode,
       defaultModel: model,
       defaultOpenTarget: openTarget,
-      locale,
-    });
+    };
+    if (opts?.pushLocale) {
+      payload.locale = this.cfg.locale ?? "system";
+    }
+    if (opts?.pushTheme) {
+      payload.theme = this.cfg.theme ?? "system";
+    }
+    if (opts?.pushAppearance || opts?.pushTheme) {
+      if (this.cfg.appearanceLight) {
+        payload.appearanceLight = this.cfg.appearanceLight;
+      }
+      if (this.cfg.appearanceDark) {
+        payload.appearanceDark = this.cfg.appearanceDark;
+      }
+    }
+    this.cb.onConfigApplied(payload);
   }
 
   private renderNav(): void {
@@ -318,6 +434,10 @@ export class SettingsPageController {
           root.innerHTML = await this.htmlGeneral();
           this.bindGeneral(root);
           break;
+        case "appearance":
+          root.innerHTML = this.htmlAppearance();
+          this.bindAppearance(root);
+          break;
         case "account":
           root.innerHTML = await this.htmlAccount();
           this.bindAccount(root);
@@ -338,6 +458,235 @@ export class SettingsPageController {
       }
     } catch (err) {
       root.innerHTML = `<p class="settings-error">${this.cb.esc(String(err))}</p>`;
+    }
+  }
+
+  // ── 外观（独立侧栏，对齐 Codex Appearance）────────────────
+
+  private htmlAppearance(): string {
+    const theme = (this.cfg.theme ?? "system") as SettingsThemePreference;
+    const variant = this.cb.resolveThemeVariant();
+    const app = this.cb.getAppearance(variant);
+    const presets = presetsForVariant(variant);
+    const variantLabel =
+      variant === "dark"
+        ? tr("settings.theme.variantDark")
+        : tr("settings.theme.variantLight");
+    const presetOpts = presets
+      .map((p) => {
+        const sel = p.id === app.codeThemeId ? " selected" : "";
+        return `<option value="${this.cb.esc(p.id)}"${sel}>${this.cb.esc(p.label)}</option>`;
+      })
+      .join("");
+    // 当前 id 不在列表时仍展示
+    const orphan =
+      !presets.some((p) => p.id === app.codeThemeId) && app.codeThemeId
+        ? `<option value="${this.cb.esc(app.codeThemeId)}" selected>${this.cb.esc(app.codeThemeId)}</option>`
+        : "";
+    const swatchStyle = `background:${this.cb.esc(app.chromeTheme.surface)};color:${this.cb.esc(app.chromeTheme.accent)};border-color:color-mix(in srgb, ${this.cb.esc(app.chromeTheme.ink)} 16%, ${this.cb.esc(app.chromeTheme.surface)})`;
+
+    return `
+      <h1 class="settings-title">${this.cb.esc(tr("settings.section.appearance"))}</h1>
+      <p class="settings-desc">${this.cb.esc(tr("settings.themeSub"))}</p>
+
+      <section class="settings-block">
+        <h2 class="settings-h2">${this.cb.esc(tr("settings.theme"))}</h2>
+        <div class="settings-choice-row">
+          ${this.choiceCard("theme", "system", theme === "system", tr("settings.theme.system"), tr("settings.theme.systemSub"))}
+          ${this.choiceCard("theme", "light", theme === "light", tr("settings.theme.light"), tr("settings.theme.lightSub"))}
+          ${this.choiceCard("theme", "dark", theme === "dark", tr("settings.theme.dark"), tr("settings.theme.darkSub"))}
+        </div>
+      </section>
+
+      <section class="settings-block">
+        <div class="settings-theme-chrome-bar" id="theme-chrome-bar">
+          <span class="settings-theme-chrome-label">${this.cb.esc(variantLabel)}</span>
+          <div class="settings-theme-chrome-actions">
+            <button type="button" class="btn-ghost settings-mini-btn" id="btn-theme-import">${this.cb.esc(tr("settings.theme.import"))}</button>
+            <button type="button" class="btn-ghost settings-mini-btn" id="btn-theme-export">${this.cb.esc(tr("settings.theme.copy"))}</button>
+            <div class="settings-theme-preset-wrap">
+              <span class="settings-theme-aa" style="${swatchStyle}" aria-hidden="true">${this.cb.esc(tr("settings.theme.aa"))}</span>
+              <select class="settings-select settings-theme-preset-select" id="theme-preset-select" aria-label="${this.cb.esc(tr("settings.theme.preset"))}">
+                ${orphan}${presetOpts}
+              </select>
+            </div>
+          </div>
+        </div>
+        <p class="settings-muted settings-theme-chrome-hint" id="theme-chrome-hint"></p>
+      </section>
+
+      <div id="theme-import-dlg" class="settings-theme-import-dlg hidden" role="dialog" aria-modal="true" aria-labelledby="theme-import-title">
+        <div class="settings-theme-import-card">
+          <h3 id="theme-import-title" class="settings-h2">${this.cb.esc(tr("settings.theme.importTitle"))}</h3>
+          <p class="settings-desc">${this.cb.esc(tr("settings.theme.importHint"))}</p>
+          <textarea id="theme-import-input" class="settings-theme-import-ta" rows="6" placeholder="codex-theme-v1:{…}" spellcheck="false"></textarea>
+          <p class="settings-error hidden" id="theme-import-err"></p>
+          <div class="settings-form-actions">
+            <button type="button" class="btn-ghost" id="btn-theme-import-cancel">${this.cb.esc(tr("common.cancel"))}</button>
+            <button type="button" class="btn-dark" id="btn-theme-import-ok">${this.cb.esc(tr("settings.theme.importOk"))}</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private bindAppearance(root: HTMLElement): void {
+    for (const el of Array.from(
+      root.querySelectorAll(".settings-choice[data-group=theme]"),
+    )) {
+      (el as HTMLElement).onclick = () => {
+        const v = (el as HTMLElement).dataset.value as SettingsThemePreference;
+        if (v !== "system" && v !== "light" && v !== "dark") return;
+        void this.patch({ theme: v }).then(() => this.renderContent());
+      };
+    }
+
+    const sel = root.querySelector(
+      "#theme-preset-select",
+    ) as HTMLSelectElement | null;
+    sel?.addEventListener("change", () => {
+      const id = sel.value.trim();
+      if (!id) return;
+      void this.applyThemePreset(id).then((msg) => {
+        const hint = root.querySelector("#theme-chrome-hint");
+        if (hint) hint.textContent = msg ?? "";
+        return this.renderContent();
+      });
+    });
+
+    root.querySelector("#btn-theme-export")?.addEventListener("click", () => {
+      void this.copyThemeString(root);
+    });
+    root.querySelector("#btn-theme-import")?.addEventListener("click", () => {
+      this.openThemeImportDlg(root);
+    });
+    root
+      .querySelector("#btn-theme-import-cancel")
+      ?.addEventListener("click", () => this.closeThemeImportDlg(root));
+    root.querySelector("#btn-theme-import-ok")?.addEventListener("click", () => {
+      void this.submitThemeImport(root);
+    });
+  }
+
+  private async applyThemePreset(codeThemeId: string): Promise<string> {
+    const variant = this.cb.resolveThemeVariant();
+    if (
+      !isKnownCodeThemeId(codeThemeId) &&
+      codeThemeId !== "default" &&
+      codeThemeId !== "codex"
+    ) {
+      // 仍允许未知 id（导入后改过 chrome 的标签）；appearanceFromPreset 会回落默认
+    }
+    const next = appearanceFromPreset(codeThemeId, variant);
+    const patch: Partial<DesktopConfigData> =
+      variant === "light"
+        ? { appearanceLight: next }
+        : { appearanceDark: next };
+    await this.patchAppearance(patch);
+    return tr("settings.theme.presetApplied", { name: codeThemeId });
+  }
+
+  private async patchAppearance(
+    partial: Partial<DesktopConfigData>,
+  ): Promise<void> {
+    const res = await this.cb.inv<DesktopConfigData>("config.patch", partial);
+    if (res.ok && res.data) this.cfg = res.data;
+    else await this.reloadConfig();
+    this.applyToApp({ pushAppearance: true, pushTheme: true });
+  }
+
+  private async copyThemeString(root: HTMLElement): Promise<void> {
+    const hint = root.querySelector("#theme-chrome-hint");
+    try {
+      const s = this.cb.exportThemeString();
+      await navigator.clipboard.writeText(s);
+      if (hint) hint.textContent = tr("settings.theme.copied");
+    } catch {
+      // fallback: 展示在导入框
+      try {
+        const s = this.cb.exportThemeString();
+        this.openThemeImportDlg(root, s);
+        if (hint) hint.textContent = tr("settings.theme.copyFallback");
+      } catch (e) {
+        if (hint) {
+          hint.textContent =
+            e instanceof Error ? e.message : tr("settings.theme.copyFail");
+        }
+      }
+    }
+  }
+
+  private openThemeImportDlg(root: HTMLElement, prefill = ""): void {
+    const dlg = root.querySelector("#theme-import-dlg");
+    const ta = root.querySelector(
+      "#theme-import-input",
+    ) as HTMLTextAreaElement | null;
+    const err = root.querySelector("#theme-import-err");
+    dlg?.classList.remove("hidden");
+    if (ta) {
+      ta.value = prefill;
+      requestAnimationFrame(() => ta.focus());
+    }
+    err?.classList.add("hidden");
+    if (err) err.textContent = "";
+  }
+
+  private closeThemeImportDlg(root: HTMLElement): void {
+    root.querySelector("#theme-import-dlg")?.classList.add("hidden");
+  }
+
+  private async submitThemeImport(root: HTMLElement): Promise<void> {
+    const ta = root.querySelector(
+      "#theme-import-input",
+    ) as HTMLTextAreaElement | null;
+    const err = root.querySelector("#theme-import-err") as HTMLElement | null;
+    const hint = root.querySelector("#theme-chrome-hint");
+    const raw = ta?.value.trim() ?? "";
+    if (!raw) {
+      if (err) {
+        err.textContent = tr("settings.theme.importEmpty");
+        err.classList.remove("hidden");
+      }
+      return;
+    }
+    try {
+      const payload = parseCodexThemeV1(raw);
+      const variant = this.cb.resolveThemeVariant();
+      assertVariantMatch(payload, variant);
+      if (!isKnownCodeThemeId(payload.codeThemeId)) {
+        // Codex 要求 id 在列表；我们允许未知 id 但保留 chrome，标签用 id
+      }
+      const next: VariantAppearance = {
+        codeThemeId: payload.codeThemeId,
+        chromeTheme: payload.theme,
+      };
+      const patch: Partial<DesktopConfigData> =
+        variant === "light"
+          ? { appearanceLight: next }
+          : { appearanceDark: next };
+      await this.patchAppearance(patch);
+      this.closeThemeImportDlg(root);
+      if (hint) hint.textContent = tr("settings.theme.imported");
+      await this.renderContent();
+    } catch (e) {
+      let msg = tr("settings.theme.importFail");
+      if (e instanceof ThemeCodecError) {
+        if (/variant mismatch/i.test(e.message)) {
+          msg = tr("settings.theme.importVariantMismatch", {
+            variant: this.cb.resolveThemeVariant(),
+          });
+        } else if (/mismatch/i.test(e.message)) {
+          msg = tr("settings.theme.importPrefix");
+        } else {
+          msg = e.message;
+        }
+      } else if (e instanceof Error) {
+        msg = e.message;
+      }
+      if (err) {
+        err.textContent = msg;
+        err.classList.remove("hidden");
+      }
     }
   }
 
@@ -401,7 +750,6 @@ export class SettingsPageController {
         <div class="settings-choice-row">
           ${this.choiceCard("perm", "normal", mode === "normal", tr("settings.perm.normal"), tr("settings.perm.normalSub"))}
           ${this.choiceCard("perm", "always_approve", mode === "always_approve", tr("settings.perm.full"), tr("settings.perm.fullSub"))}
-          ${this.choiceCard("perm", "plan", mode === "plan", tr("settings.perm.plan"), tr("settings.perm.planSub"))}
         </div>
       </section>
 
@@ -527,6 +875,7 @@ export class SettingsPageController {
       configPath: string;
     }>("providers.list");
     const list = res.data?.providers ?? [];
+    this.existingProviderIds = list.map((p) => p.id);
     const configPath = res.data?.configPath ?? this.cfg.paths?.configToml ?? "";
     const editing = this.editingProviderId
       ? list.find((p) => p.id === this.editingProviderId)
@@ -636,6 +985,31 @@ export class SettingsPageController {
     return Array.from(s).slice(0, 2).join("").toUpperCase();
   }
 
+  /** 与 host sanitizeId 对齐（失败返回空串） */
+  private sanitizeProviderId(raw: string): string {
+    const id = raw
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (!id || !/^[a-z0-9]/.test(id)) return "";
+    return id;
+  }
+
+  /** 在已占用 id 中分配唯一配置段名 */
+  private allocateUniqueProviderId(raw: string): string {
+    const base = this.sanitizeProviderId(raw) || "provider";
+    const taken = new Set(
+      this.existingProviderIds.map((x) => x.toLowerCase()),
+    );
+    if (!taken.has(base)) return base;
+    for (let n = 2; n < 1000; n++) {
+      const cand = `${base}-${n}`;
+      if (!taken.has(cand)) return cand;
+    }
+    return `${base}-${Date.now().toString(36)}`;
+  }
+
   private htmlProviderForm(
     editing: CustomProviderRow | null | undefined,
     isEdit: boolean,
@@ -645,50 +1019,62 @@ export class SettingsPageController {
             <span class="settings-field-label">${this.cb.esc(tr("prov.name"))}</span>
             <input class="settings-input" id="prov-name" value="${this.cb.esc(editing?.name ?? "")}" placeholder="${this.cb.esc(tr("prov.namePh"))}" autocomplete="off" />
           </label>
-          <label class="settings-field">
-            <span class="settings-field-label">${this.cb.esc(tr("prov.baseUrl"))}</span>
-            <input class="settings-input" id="prov-base" value="${this.cb.esc(editing?.baseUrl ?? "")}" placeholder="https://your-relay.example.com/v1" autocomplete="off" />
-            <span class="settings-field-hint">${this.cb.esc(tr("prov.baseHint"))}</span>
-          </label>
-          <div class="settings-field-row">
+          <div class="settings-field-row settings-field-row-base">
             <label class="settings-field">
-              <span class="settings-field-label">${this.cb.esc(tr("prov.apiKey"))}</span>
-              <input class="settings-input" id="prov-key" type="password" value="" placeholder="${this.cb.esc(editing?.hasApiKey ? tr("prov.keyKeep") : "sk-…")}" autocomplete="new-password" />
+              <span class="settings-field-label-row">
+                <span class="settings-field-label">${this.cb.esc(tr("prov.baseUrl"))}</span>
+              </span>
+              <input class="settings-input" id="prov-base" value="${this.cb.esc(editing?.baseUrl ?? "")}" placeholder="https://your-relay.example.com/v1" autocomplete="off" />
+              <span class="settings-field-hint">${this.cb.esc(tr("prov.baseHint"))}</span>
             </label>
             <label class="settings-field">
-              <span class="settings-field-label">${this.cb.esc(tr("prov.protocol"))}</span>
-              <select class="settings-select" id="prov-backend">
+              <span class="settings-field-label-row">
+                <span class="settings-field-label">${this.cb.esc(tr("prov.protocol"))}</span>
+              </span>
+              <select class="settings-select settings-select-block" id="prov-backend">
                 <option value="chat_completions" ${!editing || editing.apiBackend === "chat_completions" ? "selected" : ""}>OpenAI Chat Completions</option>
                 <option value="responses" ${editing?.apiBackend === "responses" ? "selected" : ""}>OpenAI Responses</option>
                 <option value="messages" ${editing?.apiBackend === "messages" ? "selected" : ""}>Anthropic Messages</option>
               </select>
             </label>
           </div>
-          <div class="settings-form-actions settings-form-actions-tight">
-            <button type="button" class="btn-ghost settings-mini-btn" id="btn-prov-fetch-models">${this.cb.esc(tr("prov.fetchModels"))}</button>
-            <span class="settings-save-hint" id="prov-fetch-hint">GET {"{base_url}"}/models</span>
+          <div class="settings-field">
+            <span class="settings-field-label">${this.cb.esc(tr("prov.apiKey"))}</span>
+            <div class="settings-key-combo">
+              <div class="settings-key-input-wrap">
+                <input class="settings-input" id="prov-key" type="password" value="" placeholder="${this.cb.esc(editing?.hasApiKey ? tr("prov.keyKeep") : "sk-…")}" autocomplete="new-password" />
+                <button type="button" class="settings-key-eye" id="btn-prov-key-vis" aria-pressed="false" title="${this.cb.esc(tr("prov.keyShowTitle"))}" aria-label="${this.cb.esc(tr("prov.keyShowTitle"))}">${KEY_EYE_HIDDEN_SVG}</button>
+              </div>
+              <button type="button" class="btn-ghost settings-mini-btn" id="btn-prov-key-b64" title="${this.cb.esc(tr("prov.keyB64Title"))}">${this.cb.esc(tr("prov.keyB64"))}</button>
+            </div>
           </div>
           <div class="settings-field-row settings-field-row-models">
             <label class="settings-field">
-              <span class="settings-field-label">${this.cb.esc(tr("prov.displayName"))}</span>
+              <span class="settings-field-label-row">
+                <span class="settings-field-label">${this.cb.esc(tr("prov.displayName"))}</span>
+              </span>
               <input class="settings-input" id="prov-id" ${isEdit ? "readonly" : ""} value="${this.cb.esc(editing?.id ?? "")}" placeholder="${this.cb.esc(tr("prov.idPh"))}" autocomplete="off" />
             </label>
             <div class="settings-field">
-              <span class="settings-field-label">${this.cb.esc(tr("prov.requestModel"))}</span>
+              <div class="settings-field-label-row">
+                <span class="settings-field-label">${this.cb.esc(tr("prov.requestModel"))}</span>
+                <button type="button" class="btn-ghost settings-mini-btn settings-label-action" id="btn-prov-fetch-models">${this.cb.esc(tr("prov.fetchModels"))}</button>
+              </div>
               <div class="settings-model-combo" id="prov-model-combo">
                 <input class="settings-input" id="prov-model" value="${this.cb.esc(editing?.model ?? "")}" placeholder="${this.cb.esc(tr("prov.modelPh"))}" autocomplete="off" />
                 <button type="button" class="settings-model-combo-btn" id="btn-prov-model-menu" title="${this.cb.esc(tr("prov.pickModel"))}" aria-label="${this.cb.esc(tr("prov.pickModel"))}" aria-haspopup="listbox" aria-expanded="false">▾</button>
                 <div class="settings-model-menu hidden" id="prov-model-menu" role="listbox"></div>
               </div>
+              <span class="settings-save-hint settings-model-fetch-hint" id="prov-fetch-hint"></span>
             </div>
           </div>
-          <label class="settings-field settings-field-check">
-            <input type="checkbox" id="prov-default" ${editing?.isDefault ? "checked" : ""} />
-            <span>${this.cb.esc(tr("prov.setDefault"))}</span>
-          </label>
           <div class="settings-form-actions settings-modal-footer">
             <button type="button" class="btn-ghost" id="btn-prov-cancel-footer">${this.cb.esc(tr("common.cancel"))}</button>
             <button type="button" class="btn-dark" id="btn-prov-save">${this.cb.esc(isEdit ? tr("prov.save") : tr("prov.add"))}</button>
+            <label class="settings-footer-check">
+              <input type="checkbox" id="prov-default" ${editing?.isDefault ? "checked" : ""} />
+              <span>${this.cb.esc(tr("prov.setDefault"))}</span>
+            </label>
             <span class="settings-save-hint" id="prov-save-hint"></span>
           </div>`;
   }
@@ -786,6 +1172,66 @@ export class SettingsPageController {
         this.syncDisplayNameFromModel(root, modelInput.value.trim(), false);
       });
     }
+    root.querySelector("#btn-prov-key-vis")?.addEventListener("click", () => {
+      this.toggleProviderKeyVisibility(root);
+    });
+    root.querySelector("#btn-prov-key-b64")?.addEventListener("click", () => {
+      this.decodeProviderKeyBase64(root);
+    });
+  }
+
+  /** 明文显示 / 隐藏 API Key */
+  private toggleProviderKeyVisibility(root: HTMLElement): void {
+    const keyInput = root.querySelector("#prov-key") as HTMLInputElement | null;
+    const btn = root.querySelector(
+      "#btn-prov-key-vis",
+    ) as HTMLButtonElement | null;
+    if (!keyInput || !btn) return;
+    const show = keyInput.type === "password";
+    keyInput.type = show ? "text" : "password";
+    this.syncProviderKeyVisButton(btn, show);
+  }
+
+  private syncProviderKeyVisButton(
+    btn: HTMLButtonElement,
+    visible: boolean,
+  ): void {
+    btn.setAttribute("aria-pressed", visible ? "true" : "false");
+    // 明文时显示划线眼（点一下隐藏）；掩码时显示睁眼（点一下显示）
+    btn.innerHTML = visible ? KEY_EYE_VISIBLE_SVG : KEY_EYE_HIDDEN_SVG;
+    const title = visible ? tr("prov.keyHideTitle") : tr("prov.keyShowTitle");
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+  }
+
+  /**
+   * 部分中转用 Base64「伪装」API Key：将输入框内容按 Base64 解成明文再写回。
+   * 失败不改动原值；仅接受可打印 UTF-8 文本。反馈写在 Base64 按钮 title。
+   */
+  private decodeProviderKeyBase64(root: HTMLElement): void {
+    const keyInput = root.querySelector("#prov-key") as HTMLInputElement | null;
+    const b64Btn = root.querySelector(
+      "#btn-prov-key-b64",
+    ) as HTMLButtonElement | null;
+    const visBtn = root.querySelector(
+      "#btn-prov-key-vis",
+    ) as HTMLButtonElement | null;
+    if (!keyInput) return;
+    const raw = keyInput.value.trim();
+    if (!raw) {
+      if (b64Btn) b64Btn.title = tr("prov.keyB64Empty");
+      return;
+    }
+    const decoded = decodeBase64ToPrintableText(raw);
+    if (!decoded.ok) {
+      if (b64Btn) b64Btn.title = tr("prov.keyB64Fail");
+      return;
+    }
+    keyInput.value = decoded.text;
+    // 解码后自动明文，便于核对（可点眼睛收回）
+    keyInput.type = "text";
+    if (visBtn) this.syncProviderKeyVisButton(visBtn, true);
+    if (b64Btn) b64Btn.title = tr("prov.keyB64Ok");
   }
 
   private bindModelCombo(root: HTMLElement): void {
@@ -875,8 +1321,8 @@ export class SettingsPageController {
   }
 
   /**
-   * 显示名称（#prov-id / 配置段名）默认 = 实际请求模型；用户手改过则不覆盖。
-   * 提供商名称（#prov-name）不在此同步。
+   * 显示名称（#prov-id / 配置段名）默认跟随请求模型，并自动避开已占用 id。
+   * 用户手改过则不覆盖。提供商名称（#prov-name）不在此同步。
    */
   private syncDisplayNameFromModel(
     root: HTMLElement,
@@ -891,22 +1337,25 @@ export class SettingsPageController {
     if (fromMenu) {
       if (idInput.dataset.userEdited === "1") {
         const modelBefore = idInput.dataset.lastAutoName ?? "";
-        if (
-          idInput.value.trim() &&
-          idInput.value.trim() !== modelBefore &&
-          idInput.value.trim() !== modelId
-        ) {
-          return;
-        }
+        const cur = idInput.value.trim();
+        // 仍是上次自动值，或与模型名相同（未真正手改）时允许重算唯一 id
+        const stillAuto =
+          !cur ||
+          cur === modelBefore ||
+          this.sanitizeProviderId(cur) === this.sanitizeProviderId(modelId) ||
+          cur === modelId;
+        if (!stillAuto) return;
         idInput.dataset.userEdited = "0";
       }
-      idInput.value = modelId;
-      idInput.dataset.lastAutoName = modelId;
+      const unique = this.allocateUniqueProviderId(modelId);
+      idInput.value = unique;
+      idInput.dataset.lastAutoName = unique;
       return;
     }
     if (idInput.dataset.userEdited === "1") return;
-    idInput.value = modelId;
-    idInput.dataset.lastAutoName = modelId;
+    const unique = this.allocateUniqueProviderId(modelId);
+    idInput.value = unique;
+    idInput.dataset.lastAutoName = unique;
   }
 
   private fillModelMenuData(models: Array<{ id: string }>): void {
@@ -962,7 +1411,8 @@ export class SettingsPageController {
   }
 
   private async saveProviderForm(root: HTMLElement): Promise<void> {
-    const id = (
+    const isCreate = !this.editingProviderId;
+    let id = (
       root.querySelector("#prov-id") as HTMLInputElement | null
     )?.value.trim();
     const name = (
@@ -988,6 +1438,26 @@ export class SettingsPageController {
       if (hint) hint.textContent = tr("prov.needFields");
       return;
     }
+    const sanitized = this.sanitizeProviderId(id);
+    if (!sanitized) {
+      if (hint) hint.textContent = tr("prov.needFields");
+      return;
+    }
+    id = sanitized;
+    // 新建：配置段 id 必须唯一，避免 upsert 静默覆盖
+    if (isCreate) {
+      const taken = this.existingProviderIds.some(
+        (x) => x.toLowerCase() === id!.toLowerCase(),
+      );
+      if (taken) {
+        if (hint) hint.textContent = tr("prov.idExists", { id });
+        const idInput = root.querySelector(
+          "#prov-id",
+        ) as HTMLInputElement | null;
+        idInput?.focus();
+        return;
+      }
+    }
     const res = await this.cb.inv("providers.upsert", {
       id,
       name: name || id,
@@ -996,6 +1466,7 @@ export class SettingsPageController {
       apiKey: apiKey || undefined,
       apiBackend,
       setAsDefault,
+      createOnly: isCreate,
     });
     if (!res.ok) {
       if (hint) hint.textContent = res.error?.message ?? tr("prov.saveFail");

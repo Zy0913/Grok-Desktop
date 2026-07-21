@@ -256,12 +256,15 @@ export const enUS: MessageDict = {
   "settings.group.personal": "Personal",
   "settings.group.integrations": "Integrations",
   "settings.section.general": "General",
+  "settings.section.appearance": "Appearance",
   "settings.section.account": "Account & providers",
   "settings.section.about": "About",
   "settings.section.memory": "Memory",
   "settings.section.shortcuts": "Keyboard shortcuts",
   "settings.kw.general":
     "permission open default full access plan language locale",
+  "settings.kw.appearance":
+    "theme appearance dark light system color scheme",
   "settings.kw.account":
     "login oauth official proxy provider api key base_url auth account",
   "settings.kw.about": "version diagnostics",
@@ -274,12 +277,43 @@ export const enUS: MessageDict = {
   "settings.language.system": "System default",
   "settings.language.zh": "简体中文",
   "settings.language.en": "English",
+  "settings.appearance": "Appearance",
+  "settings.theme": "Theme",
+  "settings.themeSub":
+    "Choose light, dark, or system; pick a preset or import a codex-theme-v1 share string.",
+  "settings.theme.system": "System",
+  "settings.theme.systemSub": "Match OS light / dark preference",
+  "settings.theme.light": "Light",
+  "settings.theme.lightSub": "Always use the light interface",
+  "settings.theme.dark": "Dark",
+  "settings.theme.darkSub": "Always use the dark interface",
+  "settings.theme.variantLight": "Light theme",
+  "settings.theme.variantDark": "Dark theme",
+  "settings.theme.import": "Import",
+  "settings.theme.copy": "Copy theme",
+  "settings.theme.preset": "Theme preset",
+  "settings.theme.aa": "Aa",
+  "settings.theme.importTitle": "Import theme",
+  "settings.theme.importHint":
+    "Paste a codex-theme-v1:{…} share string. Variant must match the current light/dark surface.",
+  "settings.theme.importOk": "Import theme",
+  "settings.theme.importEmpty": "Paste a theme share string first",
+  "settings.theme.importFail": "Import failed",
+  "settings.theme.importPrefix": "Share string must start with codex-theme-v1:",
+  "settings.theme.importVariantMismatch":
+    "Theme variant does not match the current UI (now {variant})",
+  "settings.theme.imported": "Theme imported",
+  "settings.theme.copied": "Theme copied to clipboard",
+  "settings.theme.copyFallback":
+    "Clipboard unavailable; opened the text box for manual copy",
+  "settings.theme.copyFail": "Copy failed",
+  "settings.theme.presetApplied": "Applied preset {name}",
   "settings.navAria": "Settings sections",
   "app.title": "Grok Desktop",
 
   "settings.defaultPerm": "Default permissions",
   "settings.defaultPermDesc":
-    "Default policy for new chats. The composer can override temporarily without changing this default.",
+    "Default access policy for new chats (Full access / Default). Plan mode is independent — use /plan or the plan chip.",
   "settings.perm.normal": "Default",
   "settings.perm.normalSub":
     "Read/write workspace files; sensitive actions need approval",
@@ -391,6 +425,16 @@ export const enUS: MessageDict = {
   "turn.thinking": "Thinking…",
   "turn.stopped": "Stopped",
   "turn.stopFailed": "Failed to stop",
+  /** Codex: Working for {time} */
+  "turn.workingFor": "Working · {time}",
+  /** Codex: Worked for {time} */
+  "turn.workedFor": "Done · {time}",
+  /** Codex: You stopped after {time} */
+  "turn.stoppedAfter": "Stopped · {time}",
+  "turn.timeMs": "{n}ms",
+  "turn.timeSec": "{n}s",
+  "turn.timeMin": "{m}m",
+  "turn.timeMinSec": "{m}m{s}s",
 
   // ── chat actions ───────────────────────────────────────
   "chat.copyMessage": "Copy message",
@@ -415,6 +459,9 @@ export const enUS: MessageDict = {
   "model.needProject": "Choose a project or folder first",
   "model.createFailed": "Failed to create session",
   "model.waitTurn": "Wait for the current turn before switching model/effort",
+  /** Provider/model removed from config */
+  "model.unavailableFallback":
+    "Model “{prev}” is unavailable; switched to {next}",
   "model.newSessionTitle": "New session required",
   "model.newSessionOk": "New session",
   "model.stayCurrent": "Stay on current",
@@ -461,7 +508,7 @@ export const enUS: MessageDict = {
   "slash.noMatchQ": "No matches for “{q}”",
   "slash.alwaysApprove": "Full access",
   "slash.alwaysApproveDesc":
-    "Skip permission prompts; run again to restore Default (same as permission chip)",
+    "Skip permission prompts (prefer the composer permission chip; /always-approve still works)",
   "slash.plan": "Plan mode",
   "slash.planDesc": "Enable Plan (activates on next send; chip × to exit)",
   "slash.viewPlan": "View plan",
@@ -560,11 +607,11 @@ export const enUS: MessageDict = {
   "welcome.askProject": "What should we do in {title}?",
   "welcome.askGeneric": "What should we work on?",
 
-  // ── process / elapsed ──────────────────────────────────
-  "process.elapsedMs": "Processed {n}ms",
-  "process.elapsedSec": "Processed {n}s",
-  "process.elapsedMin": "Processed {m}m",
-  "process.elapsedMinSec": "Processed {m}m{s}s",
+  // ── process / elapsed (legacy; primary path uses turn.workedFor) ──
+  "process.elapsedMs": "Done · {n}ms",
+  "process.elapsedSec": "Done · {n}s",
+  "process.elapsedMin": "Done · {m}m",
+  "process.elapsedMinSec": "Done · {m}m{s}s",
   "process.runningTool": "Running · {name}",
 
   // ── time absolute ──────────────────────────────────────
@@ -717,6 +764,7 @@ export const enUS: MessageDict = {
   "side.needProject": "Choose a project first",
   "side.noMatchFiles": "No matching files",
   "side.readFail": "Could not read file",
+  "side.openingFile": "Opening…\n{path}",
   "side.isDir": "This is a directory:\n{path}\n\nClick a file path instead.",
   "side.changesHeader": "Files / changes\n\n",
   "side.changesClean": "Working tree clean · no uncommitted changes",
@@ -841,10 +889,25 @@ export const enUS: MessageDict = {
   "prov.baseHint": "OpenAI-compatible API root, usually ends with /v1",
   "prov.apiKey": "API Key",
   "prov.keyKeep": "Configured · leave blank to keep",
+  "prov.keyShow": "Show",
+  "prov.keyHide": "Hide",
+  "prov.keyShowTitle": "Show API key",
+  "prov.keyHideTitle": "Hide API key",
+  "prov.keyB64": "Base64→text",
+  "prov.keyB64Title":
+    "Decode Base64 in the field to a plain API key (some relays disguise keys)",
+  "prov.keyB64Hint":
+    "If the provider gave a Base64-disguised key, paste it then click Base64→text",
+  "prov.keyB64Empty": "Paste Base64 content first",
+  "prov.keyB64Fail": "Not valid Base64 plain text, or decode result unusable",
+  "prov.keyB64Ok": "Decoded to plain text (use Hide to mask)",
   "prov.protocol": "Protocol",
-  "prov.fetchModels": "Fetch model list",
-  "prov.displayName": "Display name (config section)",
-  "prov.idPh": "Defaults to request model id; editable",
+  "prov.fetchModels": "Get models",
+  "prov.displayName": "Model id",
+  "prov.idPh": "Unique id, e.g. relay-a (writes [model.xxx])",
+  "prov.idHint":
+    "Must be unique — maps to [model.xxx] in config; can differ from request model",
+  "prov.idExists": "Section “{id}” already exists; pick another display name",
   "prov.requestModel": "Request model",
   "prov.modelPh": "Type or pick from the list",
   "prov.pickModel": "Choose model",
@@ -866,11 +929,10 @@ export const enUS: MessageDict = {
   "prov.fetching": "Fetching models…",
   "prov.fetchingApi": "Requesting /models…",
   "prov.fetchFail": "Fetch failed",
-  "prov.fetchFailAuto":
-    "Auto-fetch failed; try “Fetch model list”",
+  "prov.fetchFailAuto": "Auto-fetch failed; try “Get models”",
   "prov.loaded": "Loaded {n} model(s) · {endpoint}",
   "prov.emptyList": "Empty list · {endpoint}",
-  "prov.needFields": "Enter display name, request model, and Base URL",
+  "prov.needFields": "Enter model id, request model, and Base URL",
   "prov.saveFail": "Save failed",
   "prov.saved": "Saved",
   "prov.confirmDelete":
@@ -968,6 +1030,7 @@ export const enUS: MessageDict = {
   "history.empty": "No prompt history in this session yet",
   "history.noMatch": "No matches",
   "history.inserted": "Inserted into composer",
+  /** P0-A: light history-load marker (idle = send ↑) */
   "history.replayDone": "History loaded · {n} entries",
   "history.loading": "Loading local history…",
 

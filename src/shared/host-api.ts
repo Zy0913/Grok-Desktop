@@ -34,6 +34,8 @@ export type HostIpcMethod =
   | "singleInstance.status"
   | "config.get"
   | "config.patch"
+  /** 同步窗口 chrome（标题栏/背景）到 light|dark */
+  | "ui.setChromeTheme"
   // projects
   | "projects.list"
   | "projects.add"

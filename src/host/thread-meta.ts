@@ -151,4 +151,39 @@ export class ThreadMetaStore {
     delete data.sessions[sessionId];
     this.write(data);
   }
+
+  /**
+   * 将匹配的会话 model 改写为 fallback（或清除）。
+   * 用于删除提供商后对齐 CLI reselect：幽灵 model id 不得继续展示/发送。
+   */
+  remapModels(
+    match: (model: string) => boolean,
+    fallbackModel: string | null,
+  ): { updated: number; sessionIds: string[] } {
+    const data = this.read();
+    const sessionIds: string[] = [];
+    let dirty = false;
+    const fb = fallbackModel?.trim() || null;
+    for (const [sid, entry] of Object.entries(data.sessions)) {
+      const m = entry.model?.trim();
+      if (!m || !match(m)) continue;
+      const next: SessionMetaEntry = { ...entry };
+      if (fb) next.model = fb;
+      else delete next.model;
+      if (
+        !next.archived &&
+        !next.title &&
+        !next.model &&
+        !next.effort
+      ) {
+        delete data.sessions[sid];
+      } else {
+        data.sessions[sid] = next;
+      }
+      sessionIds.push(sid);
+      dirty = true;
+    }
+    if (dirty) this.write(data);
+    return { updated: sessionIds.length, sessionIds };
+  }
 }
