@@ -36,6 +36,13 @@ function baseName(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+function extLabel(p: string): string {
+  const name = baseName(p);
+  const i = name.lastIndexOf(".");
+  if (i <= 0 || i === name.length - 1) return "";
+  return name.slice(i + 1).toLowerCase();
+}
+
 function statusLabel(status: string): string {
   if (status === "?" || status === "A") return tr("side.changesNew");
   if (status === "D") return tr("side.changesDeleted");
@@ -189,16 +196,17 @@ export class ChangesPaneController {
     const stats =
       (add > 0 ? `<span class="changes-stat-add">+${add}</span>` : "") +
       (del > 0 ? `<span class="changes-stat-del">−${del}</span>` : "");
+    const lang = extLabel(f.path);
 
     return (
       `<article class="changes-file ${open ? "is-open" : ""} ${statusClass(f.status)}" data-path="${esc(f.path)}">` +
-      `<header class="changes-file-head" data-toggle="${esc(f.path)}" role="button" tabindex="0">` +
-      `<span class="changes-file-chev">${open ? "▾" : "▸"}</span>` +
-      `<span class="changes-file-name" title="${esc(f.path)}">${esc(baseName(f.path))}</span>` +
-      `<span class="changes-file-path">${esc(f.path)}</span>` +
-      `<span class="changes-file-badge">${esc(statusLabel(f.status))}</span>` +
+      `<header class="changes-file-head" data-toggle="${esc(f.path)}" role="button" tabindex="0" title="${esc(f.path)}">` +
+      (lang ? `<span class="changes-file-lang">${esc(lang)}</span>` : "") +
+      `<span class="changes-file-name">${esc(baseName(f.path))}</span>` +
       `<span class="changes-file-stats">${stats}</span>` +
-      `<button type="button" class="icon-ghost sm changes-file-open" data-open-file="${esc(f.path)}" title="${esc(tr("side.openInEditor"))}">${sfIcon("doc", { size: 13 })}</button>` +
+      `<span class="changes-file-spacer"></span>` +
+      `<span class="changes-file-badge">${esc(statusLabel(f.status))}</span>` +
+      `<button type="button" class="changes-file-open" data-open-file="${esc(f.path)}" title="${esc(tr("side.openInEditor"))}">${sfIcon("doc", { size: 12 })}</button>` +
       `</header>` +
       (open ? `<div class="changes-file-body">${body}</div>` : "") +
       `</article>`
