@@ -36,11 +36,56 @@ function baseName(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-function extLabel(p: string): string {
-  const name = baseName(p);
+/** 文件类型短标（纯文字，无色块） */
+function fileTypeBadge(path: string): { kind: string; label: string } {
+  const name = baseName(path).toLowerCase();
+  if (
+    name === ".gitignore" ||
+    name === ".gitattributes" ||
+    name.endsWith("ignore")
+  ) {
+    return { kind: "git", label: "git" };
+  }
+  if (name.endsWith(".tsx") || name.endsWith(".ts")) {
+    return { kind: "ts", label: "ts" };
+  }
+  if (
+    name.endsWith(".jsx") ||
+    name.endsWith(".js") ||
+    name.endsWith(".mjs") ||
+    name.endsWith(".cjs")
+  ) {
+    return { kind: "js", label: "js" };
+  }
+  if (name.endsWith(".css") || name.endsWith(".scss") || name.endsWith(".less")) {
+    return { kind: "css", label: "css" };
+  }
+  if (name.endsWith(".html") || name.endsWith(".htm")) {
+    return { kind: "html", label: "html" };
+  }
+  if (name.endsWith(".json") || name.endsWith(".jsonc")) {
+    return { kind: "json", label: "json" };
+  }
+  if (name.endsWith(".md") || name.endsWith(".mdx")) {
+    return { kind: "md", label: "md" };
+  }
+  if (name.endsWith(".py")) return { kind: "py", label: "py" };
+  if (name.endsWith(".rs")) return { kind: "rs", label: "rs" };
+  if (name.endsWith(".go")) return { kind: "go", label: "go" };
+  if (name.endsWith(".xml") || name.endsWith(".iml")) {
+    return { kind: "xml", label: name.endsWith(".iml") ? "iml" : "xml" };
+  }
+  if (name.endsWith(".yml") || name.endsWith(".yaml")) {
+    return { kind: "yml", label: "yml" };
+  }
+  if (name.endsWith(".svg") || name.endsWith(".png") || name.endsWith(".jpg")) {
+    return { kind: "img", label: "img" };
+  }
   const i = name.lastIndexOf(".");
-  if (i <= 0 || i === name.length - 1) return "";
-  return name.slice(i + 1).toLowerCase();
+  if (i > 0 && i < name.length - 1) {
+    return { kind: "file", label: name.slice(i + 1).toLowerCase() };
+  }
+  return { kind: "file", label: "" };
 }
 
 function statusLabel(status: string): string {
@@ -55,6 +100,13 @@ function statusClass(status: string): string {
   if (status === "D") return "is-del";
   if (status === "R") return "is-ren";
   return "is-mod";
+}
+
+function showStatusBadge(status: string): boolean {
+  // Cursor：Modified 不单独标，只突出 New / Deleted / Renamed
+  return (
+    status === "?" || status === "A" || status === "D" || status === "R"
+  );
 }
 
 export interface ChangesPaneDeps {
@@ -129,12 +181,15 @@ export class ChangesPaneController {
 
     emptyEl.classList.add("hidden");
     const n = this.files.length;
-    const parts: string[] = [
-      tr("side.changesCount", { n: String(n) }),
-    ];
-    if (add > 0) parts.push(`+${add}`);
-    if (del > 0) parts.push(`−${del}`);
-    summaryEl.textContent = parts.join("  ");
+    const addHtml =
+      add > 0 ? `<span class="changes-summary-add">+${add}</span>` : "";
+    const delHtml =
+      del > 0 ? `<span class="changes-summary-del">−${del}</span>` : "";
+    summaryEl.innerHTML =
+      `<span class="changes-summary-count">${esc(tr("side.changesCount", { n: String(n) }))}</span>` +
+      (addHtml || delHtml
+        ? `<span class="changes-summary-stats">${addHtml}${delHtml ? ` ${delHtml}` : ""}</span>`
+        : "");
 
     // drop expanded keys that disappeared
     for (const k of [...this.expanded]) {
@@ -196,16 +251,22 @@ export class ChangesPaneController {
     const stats =
       (add > 0 ? `<span class="changes-stat-add">+${add}</span>` : "") +
       (del > 0 ? `<span class="changes-stat-del">−${del}</span>` : "");
-    const lang = extLabel(f.path);
+    const type = fileTypeBadge(f.path);
+    const badge = showStatusBadge(f.status)
+      ? `<span class="changes-file-badge">${esc(statusLabel(f.status))}</span>`
+      : "";
+    // Cursor：显示相对路径，而不是只显示文件名
+    const displayPath = f.path.replace(/\\/g, "/");
 
     return (
       `<article class="changes-file ${open ? "is-open" : ""} ${statusClass(f.status)}" data-path="${esc(f.path)}">` +
       `<header class="changes-file-head" data-toggle="${esc(f.path)}" role="button" tabindex="0" title="${esc(f.path)}">` +
-      (lang ? `<span class="changes-file-lang">${esc(lang)}</span>` : "") +
-      `<span class="changes-file-name">${esc(baseName(f.path))}</span>` +
+      (type.label
+        ? `<span class="changes-file-ext is-${esc(type.kind)}" aria-hidden="true">${esc(type.label)}</span>`
+        : `<span class="changes-file-ext is-empty" aria-hidden="true"></span>`) +
+      `<span class="changes-file-name">${esc(displayPath)}</span>` +
       `<span class="changes-file-stats">${stats}</span>` +
-      `<span class="changes-file-spacer"></span>` +
-      `<span class="changes-file-badge">${esc(statusLabel(f.status))}</span>` +
+      badge +
       `<button type="button" class="changes-file-open" data-open-file="${esc(f.path)}" title="${esc(tr("side.openInEditor"))}">${sfIcon("doc", { size: 12 })}</button>` +
       `</header>` +
       (open ? `<div class="changes-file-body">${body}</div>` : "") +

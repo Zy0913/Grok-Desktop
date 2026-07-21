@@ -28,8 +28,8 @@ export interface TerminalPaneDeps {
   onPlusClick?: (anchor: HTMLElement) => void;
 }
 
-/** 浅色主题：与 app --bg / 左侧栏同色底，避免左右色差 */
-const TERM_THEME = {
+/** 浅色：与 app 侧栏同色底 */
+const TERM_THEME_LIGHT = {
   background: "#ebebef",
   foreground: "#1c1c1e",
   cursor: "#1c1c1e",
@@ -54,6 +54,38 @@ const TERM_THEME = {
   brightWhite: "#1c1c1e",
 } as const;
 
+/** 深色：对齐 app data-theme=dark */
+const TERM_THEME_DARK = {
+  background: "#1c1c1c",
+  foreground: "#e8e8e8",
+  cursor: "#e8e8e8",
+  cursorAccent: "#1c1c1c",
+  selectionBackground: "rgba(255, 255, 255, 0.18)",
+  selectionInactiveBackground: "rgba(255, 255, 255, 0.08)",
+  black: "#1a1a1a",
+  red: "#f87171",
+  green: "#4ade80",
+  yellow: "#fbbf24",
+  blue: "#60a5fa",
+  magenta: "#c084fc",
+  cyan: "#22d3ee",
+  white: "#e8e8e8",
+  brightBlack: "#777777",
+  brightRed: "#fca5a5",
+  brightGreen: "#86efac",
+  brightYellow: "#fde68a",
+  brightBlue: "#93c5fd",
+  brightMagenta: "#d8b4fe",
+  brightCyan: "#67e8f9",
+  brightWhite: "#ffffff",
+} as const;
+
+function resolveTermTheme(): typeof TERM_THEME_LIGHT | typeof TERM_THEME_DARK {
+  return document.documentElement.dataset.theme === "dark"
+    ? TERM_THEME_DARK
+    : TERM_THEME_LIGHT;
+}
+
 interface TabState {
   terminalId: string;
   title: string;
@@ -73,6 +105,7 @@ export class TerminalPaneController {
   private tabs = new Map<string, TabState>();
   private activeId: string | null = null;
   private ro: ResizeObserver | null = null;
+  private themeMo: MutationObserver | null = null;
   private deps: TerminalPaneDeps;
   private creatingDefault = false;
   /** 最近一次 agent 后台终端，用户点开 Terminal 时优先展示 */
@@ -121,17 +154,34 @@ export class TerminalPaneController {
       this.ro = new ResizeObserver(() => this.fitActive());
       this.ro.observe(this.hostEl);
     }
+    this.themeMo?.disconnect();
+    this.themeMo = new MutationObserver(() => this.applyThemeToAll());
+    this.themeMo.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    this.applyThemeToAll();
     this.syncEmpty();
   }
 
   dispose(): void {
     this.ro?.disconnect();
     this.ro = null;
+    this.themeMo?.disconnect();
+    this.themeMo = null;
     for (const tab of this.tabs.values()) {
       tab.term.dispose();
     }
     this.tabs.clear();
     this.activeId = null;
+  }
+
+  /** 跟随 html[data-theme] 切换 xterm 配色 */
+  private applyThemeToAll(): void {
+    const theme = resolveTermTheme();
+    for (const tab of this.tabs.values()) {
+      tab.term.options.theme = { ...theme };
+    }
   }
 
   /**
@@ -298,7 +348,7 @@ export class TerminalPaneController {
       fontSize: 13,
       lineHeight: 1.2,
       letterSpacing: 0,
-      theme: { ...TERM_THEME },
+      theme: { ...resolveTermTheme() },
       cursorBlink: opts.interactive,
       cursorStyle: "block",
       disableStdin: !opts.interactive,

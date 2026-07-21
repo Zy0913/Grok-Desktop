@@ -1,37 +1,30 @@
 /**
  * Codex 视觉 + macOS Liquid Glass 叠层
- * - 全平台：更接近 Codex 的银灰壳层、主表面圆角、输入卡质感
- * - darwin + .glass-native：侧栏透出原生玻璃；主区/浮层用高级磨砂
+ * - 只叠玻璃质感 / 圆角，不覆盖 styles.css 的主题 token（浅色/深色由 data-theme 驱动）
+ * - darwin + .glass-native：侧栏透出原生玻璃；主区用 color-mix(var(--bg-main))
  */
 
 :root {
-  --bg: #ebebef;
-  --bg-sidebar: transparent;
-  --bg-main: #ffffff;
-  --bg-card: #ffffff;
-  --bg-hover: rgba(0, 0, 0, 0.05);
-  --bg-active: rgba(0, 0, 0, 0.08);
-  --border: rgba(0, 0, 0, 0.08);
-  --border-soft: rgba(0, 0, 0, 0.05);
-  --text: #1c1c1e;
-  --text-2: #636366;
-  --text-3: #8e8e93;
-  --accent: #1c1c1e;
-  --orange: #e05a2b;
-  --orange-soft: rgba(224, 90, 43, 0.1);
-  --shadow: 0 10px 36px rgba(0, 0, 0, 0.07);
-  --radius: 16px;
   --radius-main: 18px;
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
-    "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --glass-fill: rgba(255, 255, 255, 0.58);
-  --glass-fill-strong: rgba(255, 255, 255, 0.78);
-  --glass-stroke: rgba(255, 255, 255, 0.62);
-  --glass-stroke-dark: rgba(0, 0, 0, 0.06);
   --glass-blur: 28px;
   --glass-saturate: 1.45;
-  --glass-shine: inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  --glass-depth: 0 12px 40px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  /* 跟随 --bg-main / --text，深色自动变暗半透明 */
+  --glass-fill: color-mix(in srgb, var(--bg-main) 62%, transparent);
+  --glass-fill-strong: color-mix(in srgb, var(--bg-main) 82%, transparent);
+  --glass-stroke: color-mix(in srgb, var(--text) 14%, transparent);
+  --glass-stroke-dark: color-mix(in srgb, var(--text) 10%, transparent);
+  --glass-shine: inset 0 1px 0 color-mix(in srgb, var(--text) 12%, transparent);
+  --glass-depth: 0 12px 40px color-mix(in srgb, var(--text) 8%, transparent),
+    0 1px 2px color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+html[data-theme="dark"] {
+  --glass-fill: color-mix(in srgb, var(--bg-main) 72%, transparent);
+  --glass-fill-strong: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  --glass-stroke: color-mix(in srgb, #fff 14%, transparent);
+  --glass-stroke-dark: color-mix(in srgb, #fff 10%, transparent);
+  --glass-shine: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
+  --glass-depth: 0 12px 40px rgba(0, 0, 0, 0.42), 0 1px 2px rgba(0, 0, 0, 0.28);
 }
 
 html,
@@ -53,7 +46,7 @@ body {
   border: 1px solid var(--border);
   border-right: 0;
   border-bottom: 0;
-  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.045);
+  box-shadow: -8px 0 28px color-mix(in srgb, var(--text) 5%, transparent);
 }
 
 .nav-row,
@@ -98,7 +91,7 @@ body {
 }
 
 .card.tip-card {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--glass-fill);
   border: 1px solid var(--border);
   box-shadow: var(--glass-shine);
   backdrop-filter: blur(12px);
@@ -106,7 +99,7 @@ body {
 }
 
 .pill-btn {
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--glass-fill);
   border: 1px solid var(--border);
   box-shadow: var(--glass-shine);
   backdrop-filter: blur(12px);
@@ -114,7 +107,7 @@ body {
 }
 
 .session-mode-chip {
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--glass-fill);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
@@ -140,13 +133,18 @@ dialog {
 }
 
 .modal {
-  background: rgba(20, 20, 24, 0.22);
+  background: color-mix(in srgb, #141418 22%, transparent);
   backdrop-filter: blur(8px) saturate(1.1);
   -webkit-backdrop-filter: blur(8px) saturate(1.1);
 }
 
+html[data-theme="dark"] .modal,
+html[data-theme="dark"] dialog::backdrop {
+  background: rgba(0, 0, 0, 0.48);
+}
+
 dialog::backdrop {
-  background: rgba(20, 20, 24, 0.22);
+  background: color-mix(in srgb, #141418 22%, transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
@@ -167,7 +165,6 @@ body.platform-darwin {
 
 body.platform-darwin::before {
   background: transparent;
-  /* 标题栏也透玻璃，仅保留拖拽 */
   border-bottom: 0;
 }
 
@@ -181,31 +178,31 @@ body.platform-darwin .sidebar {
 }
 
 body.platform-darwin .sidebar-bottom {
-  border-top-color: rgba(0, 0, 0, 0.06);
+  border-top-color: var(--border-soft);
 }
 
-/* 原生玻璃开启后：侧栏完全透底；主区做成 Codex 磨砂白纸 */
+/* 主区：跟随主题表面色，禁止写死磨砂白 */
 body.platform-darwin.glass-native .main,
 body.platform-darwin .main {
-  background: rgba(255, 255, 255, 0.72);
-  border-color: rgba(255, 255, 255, 0.45);
-  border-left-color: rgba(255, 255, 255, 0.55);
+  background: color-mix(in srgb, var(--bg-main) 78%, transparent);
+  border-color: var(--glass-stroke);
+  border-left-color: var(--glass-stroke);
   box-shadow:
-    -10px 0 36px rgba(0, 0, 0, 0.06),
+    -10px 0 36px color-mix(in srgb, var(--text) 8%, transparent),
     var(--glass-shine),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.35);
+    inset 0 0 0 0.5px var(--glass-stroke);
   backdrop-filter: blur(36px) saturate(1.55);
   -webkit-backdrop-filter: blur(36px) saturate(1.55);
 }
 
 body.platform-darwin.glass-native .main {
-  background: rgba(255, 255, 255, 0.66);
+  background: color-mix(in srgb, var(--bg-main) 72%, transparent);
 }
 
 body.platform-darwin .nav-row:hover,
 body.platform-darwin .project-item:hover,
 body.platform-darwin .thread-item:hover {
-  background: rgba(255, 255, 255, 0.28);
+  background: var(--bg-hover);
 }
 
 body.platform-darwin .project-item.active,
@@ -215,13 +212,12 @@ body.platform-darwin .thread-item.active {
 }
 
 body.platform-darwin .composer-card {
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: var(--glass-fill-strong);
+  border: 1px solid var(--glass-stroke);
   box-shadow:
-    0 16px 48px rgba(0, 0, 0, 0.08),
-    0 2px 8px rgba(0, 0, 0, 0.03),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    inset 0 -0.5px 0 rgba(0, 0, 0, 0.04);
+    var(--glass-depth),
+    var(--glass-shine),
+    inset 0 -0.5px 0 color-mix(in srgb, var(--text) 6%, transparent);
   backdrop-filter: blur(40px) saturate(1.7);
   -webkit-backdrop-filter: blur(40px) saturate(1.7);
 }
@@ -229,9 +225,9 @@ body.platform-darwin .composer-card {
 body.platform-darwin .pill-btn,
 body.platform-darwin .card.tip-card,
 body.platform-darwin .session-mode-chip {
-  background: rgba(255, 255, 255, 0.42);
-  border-color: rgba(255, 255, 255, 0.5);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  background: var(--glass-fill);
+  border-color: var(--glass-stroke);
+  box-shadow: var(--glass-shine);
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
@@ -249,40 +245,34 @@ body.platform-darwin .slash-palette,
 body.platform-darwin .at-file-palette,
 body.platform-darwin .modal-card,
 body.platform-darwin dialog {
-  background: rgba(255, 255, 255, 0.52) !important;
-  border: 1px solid rgba(255, 255, 255, 0.55) !important;
-  box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.14),
-    0 2px 8px rgba(0, 0, 0, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  background: var(--glass-fill-strong) !important;
+  border: 1px solid var(--glass-stroke) !important;
+  box-shadow: var(--glass-depth), var(--glass-shine) !important;
   backdrop-filter: blur(48px) saturate(1.8) !important;
   -webkit-backdrop-filter: blur(48px) saturate(1.8) !important;
 }
 
-/* 设置 / 插件全页：轻磨砂，避免死白 */
 body.platform-darwin .settings-page,
 body.platform-darwin .plugins-page {
-  background: rgba(255, 255, 255, 0.7);
+  background: color-mix(in srgb, var(--bg-main) 82%, transparent);
   backdrop-filter: blur(32px) saturate(1.4);
   -webkit-backdrop-filter: blur(32px) saturate(1.4);
 }
 
-/* 转录区气泡轻微玻璃，避免抢原生层 */
 body.platform-darwin .msg.assistant .msg-body,
 body.platform-darwin .bubble.assistant {
-  background: rgba(255, 255, 255, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  border: 1px solid var(--border-soft);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
 
-/* 收起侧栏时主区贴边，去掉左圆角阴影错位 */
 body.platform-darwin #app.codex-app.sidebar-collapsed > .main,
 body.platform-darwin .codex-app.sidebar-collapsed > .main {
   border-radius: 0;
   box-shadow: none;
   border-left: 0;
-  background: rgba(255, 255, 255, 0.78);
+  background: color-mix(in srgb, var(--bg-main) 84%, transparent);
 }
 
 /* 入场动画改由 styles-mac.css 统一（更长、更缓） */

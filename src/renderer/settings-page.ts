@@ -23,6 +23,18 @@ type Inv = <T>(method: HostIpcMethod, params?: unknown) => Promise<{
   error?: { message?: string };
 }>;
 
+/** 设置页展示用：把家目录收成 ~，过长再截断 */
+function shortDisplayPath(path: string, max = 42): string {
+  const raw = (path || "").trim();
+  if (!raw) return "—";
+  let s = raw
+    .replace(/^\/Users\/[^/]+/, "~")
+    .replace(/^\/home\/[^/]+/, "~");
+  if (s.length <= max) return s;
+  const keep = Math.max(12, max - 1);
+  return `…${s.slice(-keep)}`;
+}
+
 /** 默认访问权限；plan 不再作为「权限」默认项（对齐 Grok Build 两维模型） */
 export type SettingsPermMode = "always_approve" | "normal";
 /** explorer | code | cursor | codium | windsurf | editor(遗留) */
@@ -1718,66 +1730,91 @@ export class SettingsPageController {
       }>;
     }>("memory.browse", { cwd });
     const files = browse.data?.files ?? [];
-    const rows =
-      files.length === 0
-        ? `<div class="settings-row-sub">${this.cb.esc(
-            on ? tr("memory.empty") : tr("memory.disabledHint"),
-          )}</div>`
-        : files
-            .slice(0, 24)
-            .map(
-              (e) =>
-                `<div class="settings-memory-row">
-                  <div class="settings-memory-text" title="${this.cb.esc(e.path)}">
-                    <span class="mono-sm">[${this.cb.esc(e.source)}]</span>
-                    ${this.cb.esc(e.label)}${e.current ? ` · ${this.cb.esc(tr("memory.currentWs"))}` : ""}
-                  </div>
-                  ${
-                    e.deletable
-                      ? `<button type="button" class="btn-ghost sm" data-mem-del-path="${this.cb.esc(e.path)}">${this.cb.esc(tr("common.delete"))}</button>`
-                      : ""
-                  }
-                </div>`,
-            )
-            .join("");
+    const groups = ["global", "workspace", "session"] as const;
+    const bySrc = new Map<string, typeof files>();
+    for (const f of files.slice(0, 40)) {
+      const list = bySrc.get(f.source) ?? [];
+      list.push(f);
+      bySrc.set(f.source, list);
+    }
+    const fileRow = (e: {
+      source: string;
+      label: string;
+      path: string;
+      deletable: boolean;
+      current?: boolean;
+    }) =>
+      `<div class="settings-memory-row${e.current ? " is-current" : ""}" title="${this.cb.esc(e.path)}">
+        <div class="settings-memory-main">
+          <span class="settings-memory-scope scope-${this.cb.esc(e.source)}">${this.cb.esc(e.source)}</span>
+          <span class="settings-memory-label">${this.cb.esc(e.label)}${
+            e.current ? ` · ${this.cb.esc(tr("memory.currentWs"))}` : ""
+          }</span>
+        </div>
+        ${
+          e.deletable
+            ? `<button type="button" class="settings-memory-del" data-mem-del-path="${this.cb.esc(e.path)}" title="${this.cb.esc(tr("common.delete"))}">${this.cb.esc(tr("common.delete"))}</button>`
+            : ""
+        }
+      </div>`;
+
+    let rows = "";
+    if (files.length === 0) {
+      rows = `<div class="settings-empty">${this.cb.esc(
+        on ? tr("memory.empty") : tr("memory.disabledHint"),
+      )}</div>`;
+    } else {
+      for (const src of groups) {
+        const list = bySrc.get(src);
+        if (!list?.length) continue;
+        rows += `<div class="settings-memory-group">${this.cb.esc(tr(`memory.group.${src}`))}</div>`;
+        rows += list.map(fileRow).join("");
+      }
+      for (const [src, list] of bySrc) {
+        if ((groups as readonly string[]).includes(src)) continue;
+        rows += `<div class="settings-memory-group">${this.cb.esc(src)}</div>`;
+        rows += list.map(fileRow).join("");
+      }
+    }
+
+    const storeShort = shortDisplayPath(s?.storePath ?? "");
+    const stats = tr("settings.memoryStatsVal", {
+      g: s?.globalExists ? 1 : 0,
+      w: s?.workspaceCount ?? 0,
+      s: s?.sessionFileCount ?? 0,
+    });
+
     return `
       <h1 class="settings-title">${this.cb.esc(tr("settings.memoryTitle"))}</h1>
       <p class="settings-desc">${this.cb.esc(tr("settings.memoryDesc"))}</p>
-      <div class="settings-callout">${this.cb.esc(s?.productNote || tr("memory.productNote"))}</div>
       <div class="settings-card">
         <div class="settings-row">
           <div class="settings-row-text">
             <div class="settings-row-title">${this.cb.esc(tr("settings.memoryEnable"))}</div>
-            <div class="settings-row-sub">${this.cb.esc(status)} · ${this.cb.esc(tr("settings.memoryFileCount", { n: s?.fileCount ?? 0 }))}</div>
+            <div class="settings-row-sub">${this.cb.esc(status)} · ${this.cb.esc(tr("settings.memoryFileCount", { n: s?.fileCount ?? 0 }))} · ${this.cb.esc(stats)}</div>
           </div>
           <button type="button" class="settings-toggle${on ? " on" : ""}" id="cfg-memory-toggle" role="switch" aria-checked="${on}" title="${this.cb.esc(tr("settings.memoryToggle"))}"></button>
         </div>
-        <div class="settings-kv"><span>${this.cb.esc(tr("settings.storePath"))}</span><span class="mono">${this.cb.esc(s?.storePath ?? "—")}</span></div>
-        <div class="settings-kv"><span>${this.cb.esc(tr("settings.memoryToml"))}</span><span class="mono">${this.cb.esc(s?.configTomlPath ?? "—")}</span></div>
-        <div class="settings-kv"><span>${this.cb.esc(tr("settings.memoryStats"))}</span><span>${this.cb.esc(
-          tr("settings.memoryStatsVal", {
-            g: s?.globalExists ? 1 : 0,
-            w: s?.workspaceCount ?? 0,
-            s: s?.sessionFileCount ?? 0,
-          }),
-        )}</span></div>
+        <div class="settings-kv" title="${this.cb.esc(s?.storePath ?? "")}">
+          <span>${this.cb.esc(tr("settings.storePath"))}</span>
+          <span class="mono settings-path-short">${this.cb.esc(storeShort)}</span>
+        </div>
         ${
           (s?.legacyEntryCount ?? 0) > 0
-            ? `<div class="settings-row-sub">${this.cb.esc(tr("settings.memoryLegacy", { n: s?.legacyEntryCount ?? 0 }))}</div>`
+            ? `<div class="settings-row settings-row-hint"><div class="settings-row-sub">${this.cb.esc(tr("settings.memoryLegacy", { n: s?.legacyEntryCount ?? 0 }))}</div></div>`
             : ""
         }
-        <div class="settings-row-sub">${this.cb.esc(tr("settings.memoryRelaunchHint"))}</div>
+        <div class="settings-row settings-row-hint"><div class="settings-row-sub">${this.cb.esc(tr("settings.memoryRelaunchHint"))} · ${this.cb.esc(tr("memory.slashHint"))}</div></div>
       </div>
       <h2 class="settings-h2">${this.cb.esc(tr("memory.filesTitle"))}</h2>
-      <div class="settings-card" id="settings-memory-list">
+      <div class="settings-card settings-memory-card" id="settings-memory-list">
         ${rows}
         ${
-          files.length > 24
-            ? `<div class="settings-row-sub">${this.cb.esc(tr("memory.moreInSlash"))}</div>`
+          files.length > 40
+            ? `<div class="settings-empty">${this.cb.esc(tr("memory.moreInSlash"))}</div>`
             : ""
         }
       </div>
-      <p class="settings-desc">${this.cb.esc(tr("memory.slashHint"))}</p>
     `;
   }
 

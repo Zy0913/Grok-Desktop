@@ -223,12 +223,12 @@ body {
   font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--text-2);
-  background: rgba(255, 255, 255, 0.55);
-  border: 0.5px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 0.5px 0 rgba(255, 255, 255, 0.8) inset;
+  background: var(--glass-fill, color-mix(in srgb, var(--bg-main) 55%, transparent));
+  border: 0.5px solid var(--border);
+  box-shadow: var(--glass-shine, inset 0 0.5px 0 color-mix(in srgb, var(--text) 10%, transparent));
 }
 .pill-btn:hover {
-  background: rgba(255, 255, 255, 0.78);
+  background: var(--glass-fill-strong, color-mix(in srgb, var(--bg-main) 78%, transparent));
   color: var(--text);
 }
 .pill-btn .nav-ico,
@@ -569,18 +569,18 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
   stroke-width: 1.55;
 }
 
-/* ── Codex 设置页 ─────────────────────────────────────── */
+/* ── Codex 设置页（跟随主题 token，禁止写死浅灰） ─────── */
 .settings-page {
   background: transparent;
 }
 .settings-sidebar {
-  background: rgba(236, 236, 240, 0.55);
-  border-right: 0.5px solid rgba(0, 0, 0, 0.06);
+  background: color-mix(in srgb, var(--bg-sidebar) 72%, transparent);
+  border-right: 0.5px solid var(--border-soft);
   backdrop-filter: blur(28px) saturate(1.35);
   -webkit-backdrop-filter: blur(28px) saturate(1.35);
 }
 .settings-main {
-  background: rgba(250, 250, 252, 0.72);
+  background: color-mix(in srgb, var(--bg-main) 78%, transparent);
   backdrop-filter: blur(24px) saturate(1.25);
   -webkit-backdrop-filter: blur(24px) saturate(1.25);
 }
@@ -593,13 +593,16 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
   font-weight: 450;
 }
 .settings-nav-item.active {
-  background: rgba(0, 0, 0, 0.07);
+  background: var(--bg-hover);
   box-shadow: none;
   font-weight: 510;
 }
+.settings-nav-item:hover {
+  background: var(--bg-hover);
+}
 .settings-search-wrap {
-  background: rgba(255, 255, 255, 0.7);
-  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  background: var(--glass-fill-strong, var(--bg-card));
+  border: 0.5px solid var(--border);
   border-radius: 10px;
   height: 32px;
   padding: 0 10px;
@@ -617,10 +620,10 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
   margin: 0 0 8px 4px;
 }
 .settings-card {
-  background: rgba(255, 255, 255, 0.72);
-  border: 0.5px solid rgba(0, 0, 0, 0.06);
+  background: var(--glass-fill-strong, var(--bg-card));
+  border: 0.5px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  box-shadow: var(--glass-depth, 0 1px 2px color-mix(in srgb, var(--text) 4%, transparent));
 }
 .settings-row {
   padding: 16px 18px;
@@ -643,11 +646,11 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
   height: 32px;
   padding: 0 28px 0 12px;
   border-radius: 9px;
-  border: 0.5px solid rgba(0, 0, 0, 0.1);
+  border: 0.5px solid var(--border);
   background:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7.5 10 4.5 4.5L16.5 10'/%3E%3C/svg%3E")
       right 10px center / 12px no-repeat,
-    rgba(255, 255, 255, 0.85);
+    var(--bg-elevated);
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
@@ -656,7 +659,7 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
 .settings-toggle {
   width: 42px;
   height: 26px;
-  background: rgba(0, 0, 0, 0.12);
+  background: color-mix(in srgb, var(--text) 14%, transparent);
   transition: background var(--dur-ui) var(--ease-mac);
 }
 .settings-toggle::after {
@@ -665,7 +668,7 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
   width: 22px;
   height: 22px;
   transition: transform var(--dur-ui) var(--ease-spring);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text) 18%, transparent);
 }
 .settings-toggle.on {
   background: var(--orange);
@@ -677,8 +680,8 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
 .pill-btn {
   height: 28px;
   border-radius: 8px;
-  border: 0.5px solid rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.65);
+  border: 0.5px solid var(--border);
+  background: var(--glass-fill, var(--bg-muted));
   font-size: 12.5px;
   font-weight: 500;
 }
@@ -730,4 +733,30 @@ body.sidebar-collapsed .chrome-sidebar-toggle {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* 深色：覆盖本文件里写死的浅色半透明 */
+html[data-theme="dark"] .pill-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0.5px 0 rgba(255, 255, 255, 0.08) inset;
+}
+html[data-theme="dark"] .pill-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+html[data-theme="dark"] .send-btn {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+html[data-theme="dark"] .send-btn .sf-ico {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="dark"] .composer-card:focus-within {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.4),
+    0 2px 8px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
