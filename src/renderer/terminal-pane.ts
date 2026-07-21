@@ -15,8 +15,12 @@ type Inv = (
 export interface TerminalPaneDeps {
   inv: Inv;
   getCwd: () => string | null;
-  /** Open side pane on terminal category */
+  /** Open side pane on terminal category (user-initiated / interactive) */
   focusTerminalCategory: () => void;
+  /** Whether the side pane is currently showing the terminal category */
+  isTerminalCategoryActive?: () => boolean;
+  /** ACP 后台终端：不抢焦点，仅提示有活动 */
+  onAcpTerminalBackground?: (terminalId: string) => void;
   onFocus?: () => void;
   onClose?: () => void;
   onBackHome?: () => void;
@@ -71,9 +75,18 @@ export class TerminalPaneController {
   private ro: ResizeObserver | null = null;
   private deps: TerminalPaneDeps;
   private creatingDefault = false;
+  /** 最近一次 agent 后台终端，用户点开 Terminal 时优先展示 */
+  private pendingAcpId: string | null = null;
 
   constructor(deps: TerminalPaneDeps) {
     this.deps = deps;
+  }
+
+  /** 侧栏切入 Terminal 时优先激活该 ACP 标签 */
+  activateIfPresent(terminalId: string): boolean {
+    if (!this.tabs.has(terminalId)) return false;
+    this.activate(terminalId);
+    return true;
   }
 
   mount(root: HTMLElement): void {
@@ -122,18 +135,47 @@ export class TerminalPaneController {
   }
 
   /**
-   * Codex / Cursor：切到终端栏时，若没有可用会话则自动开本机 shell。
+   * Cursor / Codex：用户切到终端栏时：
+   * - 已有存活会话（含 ACP）→ 激活展示，不额外开 zsh
+   * - 完全没有会话 → 自动开本机交互 shell
+   * Agent 后台建终端不走这里；由用户点 Terminal / + / 快捷键进入。
    */
   ensureDefaultTerminal(): void {
     const run = () => {
-      const live = [...this.tabs.values()].filter((t) => !t.exited);
-      if (live.length > 0) {
+      // 有待查看的 agent 服务终端 → 优先展示（Cursor：点 Terminal 看到刚起的服务）
+      const pending = this.pendingAcpId;
+      if (pending) {
+        const tab = this.tabs.get(pending);
+        if (tab && !tab.exited) {
+          this.pendingAcpId = null;
+          this.activate(pending);
+          return;
+        }
+        this.pendingAcpId = null;
+      }
+      const liveAcp = [...this.tabs.values()].filter(
+        (t) => !t.exited && t.kind === "acp",
+      );
+      if (liveAcp.length > 0) {
+        const prefer =
+          this.activeId &&
+          this.tabs.get(this.activeId)?.kind === "acp" &&
+          !this.tabs.get(this.activeId)!.exited
+            ? this.activeId!
+            : liveAcp[liveAcp.length - 1]!.terminalId;
+        this.activate(prefer);
+        return;
+      }
+      const liveUser = [...this.tabs.values()].filter(
+        (t) => !t.exited && t.kind === "user",
+      );
+      if (liveUser.length > 0) {
         const prefer =
           this.activeId &&
           this.tabs.get(this.activeId) &&
           !this.tabs.get(this.activeId)!.exited
             ? this.activeId
-            : live[0]!.terminalId;
+            : liveUser[0]!.terminalId;
         this.activate(prefer);
         return;
       }
@@ -150,16 +192,40 @@ export class TerminalPaneController {
         terminalId: ev.terminalId,
         title: ev.title,
         kind: ev.kind,
-        interactive: ev.interactive,
+        // ACP 服务终端也允许输入 / Ctrl+C（Cursor 对齐）
+        interactive: ev.interactive || ev.kind === "acp",
       });
-      this.activate(ev.terminalId);
-      this.deps.focusTerminalCategory();
       this.creatingDefault = false;
+
+      // Cursor：
+      // - 用户自建 shell：打开侧栏并聚焦
+      // - Agent 起的服务：建可交互标签，不抢聊天焦点；已在终端栏则切到该标签
+      const onTerminal = this.deps.isTerminalCategoryActive?.() === true;
+      if (ev.kind === "user") {
+        this.activate(ev.terminalId);
+        this.deps.focusTerminalCategory();
+      } else if (onTerminal) {
+        this.activate(ev.terminalId);
+      } else {
+        this.pendingAcpId = ev.terminalId;
+        this.deps.onAcpTerminalBackground?.(ev.terminalId);
+      }
       return;
     }
     if (ev.type === "terminal.output") {
       const tab = this.tabs.get(ev.terminalId);
       if (tab) tab.term.write(ev.data);
+      // 后台有新输出时点一下 Terminal 磁贴（不抢焦点）
+      const onTerminal = this.deps.isTerminalCategoryActive?.() === true;
+      if (
+        tab &&
+        tab.kind === "acp" &&
+        !tab.exited &&
+        (!onTerminal || this.activeId !== ev.terminalId)
+      ) {
+        this.pendingAcpId = ev.terminalId;
+        this.deps.onAcpTerminalBackground?.(ev.terminalId);
+      }
       return;
     }
     if (ev.type === "terminal.exit") {
@@ -327,9 +393,12 @@ export class TerminalPaneController {
       btn.setAttribute("role", "tab");
       const shellLabel =
         tab.kind === "acp"
-          ? `AI · ${truncate(tab.title, 18)}`
+          ? truncate(shortAcpTitle(tab.title), 22)
           : `>_ ${guessShellName()}`;
-      btn.title = tab.title;
+      btn.title =
+        tab.kind === "acp"
+          ? `${tr("side.terminalAgentTab")}: ${tab.title}`
+          : tab.title;
       const label = document.createElement("span");
       label.className = "term-pane-tab-label term-pane-tab-shell";
       label.textContent = shellLabel;
@@ -369,6 +438,30 @@ export class TerminalPaneController {
 function truncate(s: string, n: number): string {
   const t = s.trim();
   return t.length <= n ? t : t.slice(0, n - 1) + "…";
+}
+
+/** 标签显示短命令：剥 bash -lc / cd &&，贴近 Cursor */
+function shortAcpTitle(raw: string): string {
+  let s = raw.trim().replace(/\s+/g, " ");
+  const wrapped = s.match(
+    /^\/bin\/(?:ba)?sh\s+-l?c\s+(['"])([\s\S]*)\1\s*$/i,
+  );
+  if (wrapped?.[2]) s = wrapped[2].trim();
+  const parts = s.split(/\s&&\s/);
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1]!.trim();
+    if (last && !/^cd\s+/i.test(last)) s = last;
+  }
+  // python3 -m http.server … → python3 · http.server
+  const py = s.match(/^((?:\/\S+\/)?python3?)\s+-m\s+(\S+)/i);
+  if (py) return `${pathBase(py[1]!)} · ${py[2]}`;
+  const tok = s.split(/\s+/)[0] || s;
+  return pathBase(tok);
+}
+
+function pathBase(p: string): string {
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i >= 0 ? p.slice(i + 1) : p;
 }
 
 function guessShellName(): string {

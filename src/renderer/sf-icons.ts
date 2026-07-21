@@ -40,7 +40,11 @@ export type SfIconName =
   | "person"
   | "command"
   | "terminal"
-  | "globe";
+  | "globe"
+  | "chevronLeft"
+  | "arrowUpRight"
+  | "star"
+  | "starFill";
 
 /** 24×24 viewBox 路径，stroke 由外层 SVG 控制 */
 const PATHS: Record<SfIconName, string> = {
@@ -103,6 +107,12 @@ const PATHS: Record<SfIconName, string> = {
     '<rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="m7.2 9.2 2.8 2.8-2.8 2.8"/><path d="M12.2 14.8h4.6"/>',
   globe:
     '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.4 2.6 3.6 5.5 3.6 8.5S14.4 17.9 12 20.5C9.6 17.9 8.4 15 8.4 12S9.6 6.1 12 3.5z"/>',
+  chevronLeft: '<path d="m14 7.5-4.5 4.5L14 16.5"/>',
+  arrowUpRight:
+    '<path d="M8.5 15.5 15.5 8.5"/><path d="M9.5 8.5h6v6"/>',
+  star: '<path d="m12 4.2 2.2 4.5 5 .7-3.6 3.5.9 5L12 15.5 7.5 17.9l.9-5L4.8 9.4l5-.7Z"/>',
+  starFill:
+    '<path d="m12 4.2 2.2 4.5 5 .7-3.6 3.5.9 5L12 15.5 7.5 17.9l.9-5L4.8 9.4l5-.7Z" fill="currentColor" stroke="none"/>',
 };
 
 export interface SfIconOpts {

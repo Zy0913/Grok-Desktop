@@ -453,6 +453,13 @@ export function normalizeSessionNotification(
       const success =
         exitCode === 0 || (exitCode == null && !signal);
       const staleOnLoad = signal === "session_restart";
+      const description =
+        (typeof snap.description === "string" && snap.description.trim()
+          ? snap.description.trim()
+          : undefined) ||
+        (typeof update.description === "string" && update.description.trim()
+          ? update.description.trim()
+          : undefined);
       const command = String(
         snap.display_command ??
           snap.displayCommand ??
@@ -504,7 +511,7 @@ export function normalizeSessionNotification(
           taskId,
           phase: "completed",
           command: command || undefined,
-          description: command || undefined,
+          description: description || command || undefined,
           cwd: String(snap.cwd ?? "") || undefined,
           outputFile: String(
             snap.output_file ?? snap.outputFile ?? "",

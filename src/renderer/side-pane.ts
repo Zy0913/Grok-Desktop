@@ -9,6 +9,10 @@ import { linkifyFilePaths } from "./file-links.js";
 import { hydrateSfIcons, sfIcon } from "./sf-icons.js";
 import { TerminalPaneController } from "./terminal-pane.js";
 import { ChangesPaneController } from "./changes-pane.js";
+import {
+  normalizeLocalPreviewUrl,
+  type PortService,
+} from "./port-chips.js";
 import type { NormalizedEvent } from "../shared/events.js";
 
 type HostRes<T> = {
@@ -38,6 +42,9 @@ export type FileTab = {
 const LS_OPEN = "grok.desktop.sidePaneOpen";
 const LS_WIDTH = "grok.desktop.sidePaneWidth";
 const LS_CAT = "grok.desktop.sidePaneCat";
+const LS_BROWSER_FAVS = "grok.desktop.browserFavorites";
+
+type BrowserFavorite = { url: string; title: string; addedAt: number };
 
 export type SideCategory = "home" | "files" | "browser" | "terminal" | "plan" | "agents" | "changes";
 
@@ -150,6 +157,10 @@ export class SidePaneController {
   private focusMode = false;
   private onFocusModeChange?: (focus: boolean) => void;
   private terminalPane: TerminalPaneController | null = null;
+  /** Browser 预览关联的 ACP 终端（从 localhost 气泡进来） */
+  private browserPreviewTerminalId: string | null = null;
+  private browserLoadTimer: ReturnType<typeof setTimeout> | null = null;
+  private browserLoadToken = 0;
   private changesPane: ChangesPaneController | null = null;
   constructor(opts: {
     inv: Inv;
@@ -169,7 +180,10 @@ export class SidePaneController {
     this.applyFocusMode();
     this.mountTerminalPane();
     this.mountChangesPane();
+    this.bindBrowserPreviewChrome();
+    this.renderBrowserFavorites();
     this.syncSideTopLead();
+    hydrateSfIcons(document.getElementById("side-pane") ?? document);
     if (this.open) this.applyOpenState(true);
     // 恢复偏好若已在终端分类：自动开 shell（对齐 Cursor）
     if (this.category === "terminal" && this.open) {
@@ -187,6 +201,10 @@ export class SidePaneController {
       inv: (method, params) => this.inv(method as HostIpcMethod, params),
       getCwd: () => this.getCwd(),
       focusTerminalCategory: () => this.setCategory("terminal", true),
+      isTerminalCategoryActive: () => this.open && this.category === "terminal",
+      onAcpTerminalBackground: () => {
+        document.getElementById("btn-home-terminal")?.classList.add("has-activity");
+      },
       onFocus: () => this.toggleFocusMode(),
       onClose: () => {
         this.setFocusMode(false);
@@ -215,6 +233,345 @@ export class SidePaneController {
   /** Forward host terminal.* events */
   onTerminalEvent(ev: NormalizedEvent): void {
     this.terminalPane?.onHostEvent(ev);
+  }
+
+  /** Cursor：localhost 气泡 → 侧栏预览 */
+  openBrowserPreview(svc: PortService): void {
+    this.browserPreviewTerminalId = svc.terminalId;
+    this.setCategory("browser", true);
+    document.getElementById("browser-placeholder")?.classList.add("hidden");
+    document.getElementById("browser-preview")?.classList.remove("hidden");
+    document.getElementById("btn-browser-to-term")?.classList.remove("hidden");
+    document.getElementById("btn-browser-external")?.classList.remove("hidden");
+    document.getElementById("btn-browser-reload")?.classList.remove("hidden");
+    this.navigateBrowserPreview(svc.url);
+    this.syncSideTopLead();
+  }
+
+  /** Cursor：气泡第二次点击 / 菜单 → 对应 Terminal */
+  openTerminalForService(svc: PortService): void {
+    this.setCategory("terminal", true);
+    const ok = this.terminalPane?.activateIfPresent(svc.terminalId);
+    if (!ok) this.terminalPane?.ensureDefaultTerminal();
+  }
+
+  private bindBrowserPreviewChrome(): void {
+    document.getElementById("btn-browser-reload")?.addEventListener("click", () => {
+      const url = this.currentBrowserPreviewUrl();
+      if (url) this.navigateBrowserPreview(url);
+    });
+    const openExternal = () => {
+      const url = this.currentBrowserPreviewUrl();
+      if (url) void this.inv("system.openExternal", { url });
+    };
+    document
+      .getElementById("btn-browser-external")
+      ?.addEventListener("click", openExternal);
+    document
+      .getElementById("btn-browser-fallback-external")
+      ?.addEventListener("click", openExternal);
+    document.getElementById("btn-browser-to-term")?.addEventListener("click", () => {
+      const id = this.browserPreviewTerminalId;
+      if (!id) {
+        this.setCategory("terminal", true);
+        return;
+      }
+      this.setCategory("terminal", true);
+      this.terminalPane?.activateIfPresent(id);
+    });
+    document.getElementById("btn-browser-star")?.addEventListener("click", () => {
+      const url = this.currentBrowserPreviewUrl();
+      if (!url) return;
+      this.toggleBrowserFavorite(url);
+    });
+    document.getElementById("btn-browser-favs")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleBrowserFavsMenu(
+        e.currentTarget as HTMLElement,
+      );
+    });
+    const urlInput = document.getElementById(
+      "browser-preview-url",
+    ) as HTMLInputElement | null;
+    urlInput?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const raw = urlInput.value.trim();
+      const normalized = normalizeLocalPreviewUrl(raw);
+      if (!normalized) {
+        this.showBrowserFallback(true);
+        return;
+      }
+      this.navigateBrowserPreview(normalized);
+    });
+    urlInput?.addEventListener("input", () => {
+      this.syncBrowserStar(normalizeLocalPreviewUrl(urlInput.value));
+    });
+  }
+
+  private loadBrowserFavorites(): BrowserFavorite[] {
+    try {
+      const raw = localStorage.getItem(LS_BROWSER_FAVS);
+      if (!raw) return [];
+      const arr = JSON.parse(raw) as BrowserFavorite[];
+      if (!Array.isArray(arr)) return [];
+      return arr.filter((x) => x && typeof x.url === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  private saveBrowserFavorites(list: BrowserFavorite[]): void {
+    localStorage.setItem(LS_BROWSER_FAVS, JSON.stringify(list.slice(0, 40)));
+  }
+
+  private isBrowserFavorite(url: string): boolean {
+    const n = normalizeLocalPreviewUrl(url);
+    if (!n) return false;
+    return this.loadBrowserFavorites().some((f) => f.url === n);
+  }
+
+  private toggleBrowserFavorite(url: string): void {
+    const n = normalizeLocalPreviewUrl(url);
+    if (!n) return;
+    const list = this.loadBrowserFavorites();
+    const idx = list.findIndex((f) => f.url === n);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+    } else {
+      let title = n;
+      try {
+        title = `localhost:${new URL(n).port || "80"}`;
+      } catch {
+        /* keep */
+      }
+      list.unshift({ url: n, title, addedAt: Date.now() });
+    }
+    this.saveBrowserFavorites(list);
+    this.syncBrowserStar(n);
+    this.renderBrowserFavorites();
+  }
+
+  private syncBrowserStar(url: string | null): void {
+    const btn = document.getElementById("btn-browser-star");
+    if (!btn) return;
+    const on = Boolean(url && this.isBrowserFavorite(url));
+    btn.classList.toggle("is-on", on);
+    btn.title = on ? tr("port.unfavorite") : tr("port.favorite");
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.innerHTML = sfIcon(on ? "starFill" : "star", {
+      size: 14,
+      className: "sf-ico sf-ico--tool",
+    });
+  }
+
+  private renderBrowserFavorites(): void {
+    const block = document.getElementById("browser-favorites-block");
+    const listEl = document.getElementById("browser-favorites-list");
+    if (!block || !listEl) return;
+    const favs = this.loadBrowserFavorites();
+    if (!favs.length) {
+      block.classList.add("hidden");
+      listEl.innerHTML = "";
+      return;
+    }
+    block.classList.remove("hidden");
+    listEl.innerHTML = favs
+      .map(
+        (f) =>
+          `<li>
+            <button type="button" class="browser-fav-item" data-fav-url="${esc(f.url)}" title="${esc(f.url)}">
+              <span class="browser-fav-ico">${sfIcon("globe", { size: 13, className: "sf-ico sf-ico--sm" })}</span>
+              <span class="browser-fav-label">${esc(f.title || f.url)}</span>
+              <span class="browser-fav-rm" data-fav-rm="${esc(f.url)}" title="${esc(tr("port.unfavorite"))}">${sfIcon("xmark", { size: 11, className: "sf-ico sf-ico--sm" })}</span>
+            </button>
+          </li>`,
+      )
+      .join("");
+    listEl.querySelectorAll<HTMLElement>("[data-fav-url]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const rm = (e.target as HTMLElement).closest("[data-fav-rm]") as
+          | HTMLElement
+          | null;
+        if (rm) {
+          e.stopPropagation();
+          const u = rm.dataset.favRm;
+          if (u) this.toggleBrowserFavorite(u);
+          return;
+        }
+        const u = btn.dataset.favUrl;
+        if (!u) return;
+        this.openBrowserPreview({
+          key: `fav:${u}`,
+          port: Number(new URL(u).port || 80),
+          host: "127.0.0.1",
+          url: u,
+          terminalId: this.browserPreviewTerminalId || "",
+          title: u,
+          phase: "idle",
+        });
+      });
+    });
+  }
+
+  private favsMenuEl: HTMLElement | null = null;
+
+  private toggleBrowserFavsMenu(anchor: HTMLElement): void {
+    if (this.favsMenuEl) {
+      this.hideBrowserFavsMenu();
+      return;
+    }
+    const favs = this.loadBrowserFavorites();
+    const menu = document.createElement("div");
+    menu.className = "browser-favs-menu float-menu";
+    if (!favs.length) {
+      menu.innerHTML = `<div class="browser-favs-empty">${esc(tr("port.favoritesEmpty"))}</div>`;
+    } else {
+      menu.innerHTML = favs
+        .map(
+          (f) =>
+            `<button type="button" class="browser-favs-menu-item" data-url="${esc(f.url)}">
+              <span>${sfIcon("globe", { size: 13, className: "sf-ico sf-ico--sm" })}</span>
+              <span>${esc(f.title || f.url)}</span>
+            </button>`,
+        )
+        .join("");
+    }
+    document.body.appendChild(menu);
+    this.favsMenuEl = menu;
+    anchor.setAttribute("aria-expanded", "true");
+    const r = anchor.getBoundingClientRect();
+    const mh = menu.offsetHeight || 120;
+    menu.style.left = `${Math.max(8, Math.min(r.right - 200, window.innerWidth - 212))}px`;
+    menu.style.top =
+      r.bottom + mh + 8 > window.innerHeight
+        ? `${Math.max(8, r.top - mh - 6)}px`
+        : `${r.bottom + 6}px`;
+    menu.querySelectorAll<HTMLElement>("[data-url]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const u = btn.dataset.url;
+        this.hideBrowserFavsMenu();
+        if (!u) return;
+        this.openBrowserPreview({
+          key: `fav:${u}`,
+          port: Number(new URL(u).port || 80),
+          host: "127.0.0.1",
+          url: u,
+          terminalId: this.browserPreviewTerminalId || "",
+          title: u,
+          phase: "idle",
+        });
+      });
+    });
+    const onDoc = (ev: MouseEvent) => {
+      if (menu.contains(ev.target as Node) || anchor.contains(ev.target as Node))
+        return;
+      this.hideBrowserFavsMenu();
+      document.removeEventListener("click", onDoc, true);
+    };
+    setTimeout(() => document.addEventListener("click", onDoc, true), 0);
+  }
+
+  private hideBrowserFavsMenu(): void {
+    this.favsMenuEl?.remove();
+    this.favsMenuEl = null;
+    document
+      .getElementById("btn-browser-favs")
+      ?.setAttribute("aria-expanded", "false");
+  }
+
+  private currentBrowserPreviewUrl(): string | null {
+    const urlInput = document.getElementById(
+      "browser-preview-url",
+    ) as HTMLInputElement | null;
+    const fromInput = urlInput?.value?.trim();
+    if (fromInput) {
+      const n = normalizeLocalPreviewUrl(fromInput);
+      if (n) return n;
+    }
+    const frame = document.getElementById(
+      "browser-preview-frame",
+    ) as HTMLIFrameElement | null;
+    const src = frame?.src?.trim();
+    if (src && src !== "about:blank") return src;
+    return null;
+  }
+
+  private navigateBrowserPreview(url: string): void {
+    const normalized = normalizeLocalPreviewUrl(url);
+    const urlInput = document.getElementById(
+      "browser-preview-url",
+    ) as HTMLInputElement | null;
+    const frame = document.getElementById(
+      "browser-preview-frame",
+    ) as HTMLIFrameElement | null;
+    const fallback = document.getElementById("browser-preview-fallback");
+    if (!normalized) {
+      if (urlInput) urlInput.value = url;
+      this.showBrowserFallback(true);
+      return;
+    }
+    if (urlInput) urlInput.value = normalized;
+    this.syncBrowserStar(normalized);
+    fallback?.classList.add("hidden");
+    frame?.classList.remove("hidden");
+    if (!frame) return;
+
+    if (this.browserLoadTimer) {
+      clearTimeout(this.browserLoadTimer);
+      this.browserLoadTimer = null;
+    }
+    const token = ++this.browserLoadToken;
+    let settled = false;
+    const onLoad = () => {
+      if (token !== this.browserLoadToken) return;
+      settled = true;
+      if (this.browserLoadTimer) {
+        clearTimeout(this.browserLoadTimer);
+        this.browserLoadTimer = null;
+      }
+      // about:blank 的 load 不算成功
+      if (!frame.src || frame.src === "about:blank") return;
+      this.showBrowserFallback(false);
+    };
+    frame.addEventListener("load", onLoad, { once: true });
+    frame.src = "about:blank";
+    requestAnimationFrame(() => {
+      if (token !== this.browserLoadToken) return;
+      frame.src = normalized;
+      // 超时仍无有效 load → 提示外开（XFO / 服务未起）
+      this.browserLoadTimer = setTimeout(() => {
+        if (token !== this.browserLoadToken || settled) return;
+        // 同源页面通常会触发 load；若被拦或挂起，露出兜底
+        try {
+          // 跨域读 contentDocument 会抛；能读到且有 body 则视为成功
+          const doc = frame.contentDocument;
+          if (doc?.body && (doc.body.childElementCount > 0 || doc.body.textContent)) {
+            this.showBrowserFallback(false);
+            return;
+          }
+        } catch {
+          // 跨域但已导航成功：也算预览可用
+          if (frame.src && frame.src !== "about:blank") {
+            this.showBrowserFallback(false);
+            return;
+          }
+        }
+        this.showBrowserFallback(true);
+      }, 3500);
+    });
+  }
+
+  private showBrowserFallback(show: boolean): void {
+    const fallback = document.getElementById("browser-preview-fallback");
+    const frame = document.getElementById("browser-preview-frame");
+    if (show) {
+      fallback?.classList.remove("hidden");
+      // 保留 iframe，但用遮罩提示
+    } else {
+      fallback?.classList.add("hidden");
+      frame?.classList.remove("hidden");
+    }
   }
 
   /** Cursor：侧栏 + 二级菜单（home / 终端顶栏共用） */
@@ -433,7 +790,12 @@ export class SidePaneController {
     this.persist();
     if (cat === "terminal") {
       this.refreshTerminalCwd();
+      document.getElementById("btn-home-terminal")?.classList.remove("has-activity");
       this.terminalPane?.ensureDefaultTerminal();
+    }
+    if (cat === "browser") {
+      this.renderBrowserFavorites();
+      hydrateSfIcons(document.getElementById("side-cat-browser") ?? document);
     }
     if (cat === "files") void this.refreshFileTree();
     else void this.syncFileWatch();

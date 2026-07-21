@@ -119,6 +119,54 @@ function envRecord(env: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
+/**
+ * Agent (clientTerminal) 有时把整行
+ *   `/bin/bash -lc 'cd … && ./start.sh'`
+ * 放进 `command`、`args` 为空。Node `spawn(file)` 会把整串当可执行路径 → ENOENT。
+ * CLI/grok build 自己拆 argv，所以桌面路径必须兼容两种形态。
+ */
+export function resolveAcpSpawn(
+  command: string,
+  args?: string[],
+): { file: string; args: string[] } {
+  const argv = args?.length ? args.map(String) : [];
+  const trimmed = String(command ?? "").trim();
+  if (!trimmed) {
+    return { file: command, args: argv };
+  }
+  // 已正确拆分：command=/bin/bash args=[-lc, script]
+  if (argv.length > 0) {
+    return { file: trimmed, args: argv };
+  }
+  // 无空格：就是可执行文件名
+  if (!/\s/.test(trimmed)) {
+    return { file: trimmed, args: [] };
+  }
+
+  // /bin/bash -lc 'script' | bash -c "script" | /bin/zsh -lc script
+  const shellLine = trimmed.match(
+    /^((?:\/(?:usr\/)?bin\/)?(?:ba)?sh|\/bin\/zsh|zsh)\s+(-l?c)\s+([\s\S]+)$/i,
+  );
+  if (shellLine) {
+    let script = shellLine[3]!.trim();
+    if (
+      (script.startsWith("'") && script.endsWith("'")) ||
+      (script.startsWith('"') && script.endsWith('"'))
+    ) {
+      script = script.slice(1, -1);
+    }
+    return { file: shellLine[1]!, args: [shellLine[2]!, script] };
+  }
+
+  // 普通 shell 行：交 login shell 执行（对齐 agent 的 -lc 语义）
+  if (process.platform === "win32") {
+    const comspec = process.env.COMSPEC || "cmd.exe";
+    return { file: comspec, args: ["/d", "/s", "/c", trimmed] };
+  }
+  const shell = process.env.SHELL || "/bin/zsh";
+  return { file: shell, args: ["-lc", trimmed] };
+}
+
 export class TerminalService {
   private sessions = new Map<string, Session>();
   private emit: EmitFn;
@@ -144,12 +192,16 @@ export class TerminalService {
     const cwd = params.cwd
       ? path.resolve(params.cwd)
       : process.cwd();
-    const args = params.args ?? [];
+    const { file, args } = resolveAcpSpawn(params.command, params.args);
     const byteLimit =
       typeof params.outputByteLimit === "number" && params.outputByteLimit > 0
         ? params.outputByteLimit
         : 1_048_576;
-    const title = [params.command, ...args].join(" ").slice(0, 80) || "Command";
+    const title =
+      [params.command, ...(params.args ?? [])].join(" ").slice(0, 80) ||
+      "Command";
+    // Cursor 对齐：agent 起的服务进 Terminal 面板，可看输出 / Ctrl+C / 输入
+    const interactive = true;
 
     const info: TerminalInfo = {
       terminalId,
@@ -159,7 +211,7 @@ export class TerminalService {
       command: title,
       threadId: params.threadId,
       sessionId: params.sessionId,
-      interactive: false,
+      interactive,
       exited: false,
       createdAt: new Date().toISOString(),
     };
@@ -174,39 +226,97 @@ export class TerminalService {
       kill: () => undefined,
     };
 
-    const proc: ChildProcess = spawn(params.command, args, {
-      cwd,
-      env: envFromPairs(params.env),
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      shell: false,
-    });
-
-    const append = (chunk: Buffer | string) => {
-      this.appendOutput(session, typeof chunk === "string" ? chunk : chunk.toString("utf8"));
-    };
-    proc.stdout?.on("data", append);
-    proc.stderr?.on("data", append);
-    proc.on("error", (err) => {
-      this.appendOutput(session, `\n[error] ${err.message}\n`);
-      this.markExit(session, { exitCode: 1, signal: null });
-    });
-    proc.on("exit", (code, signal) => {
-      this.markExit(session, {
-        exitCode: code,
-        signal: signal ?? null,
+    const env = envFromPairs(params.env);
+    const pty = loadPty();
+    if (pty) {
+      const p = pty.spawn(file, args, {
+        name: "xterm-256color",
+        cols: 80,
+        rows: 24,
+        cwd,
+        env: envRecord({
+          ...env,
+          TERM: "xterm-256color",
+          COLORTERM: "truecolor",
+          TERM_PROGRAM: "GrokDesktop",
+          TERM_PROGRAM_VERSION: "0.1.0",
+          CLICOLOR: "1",
+          CLICOLOR_FORCE: "1",
+          FORCE_COLOR: "1",
+        }),
       });
-    });
-
-    session.kill = () => {
-      if (!proc.killed) {
+      p.onData((data) => this.appendOutput(session, data));
+      p.onExit(({ exitCode, signal }) => {
+        this.markExit(session, {
+          exitCode: exitCode ?? 0,
+          signal: signal != null ? String(signal) : null,
+        });
+      });
+      session.write = (data) => {
         try {
-          proc.kill("SIGTERM");
+          p.write(data);
         } catch {
           /* ignore */
         }
-      }
-    };
+      };
+      session.resize = (c, r) => {
+        try {
+          p.resize(Math.max(2, c), Math.max(1, r));
+        } catch {
+          /* ignore */
+        }
+      };
+      session.kill = () => {
+        try {
+          p.kill();
+        } catch {
+          /* ignore */
+        }
+      };
+    } else {
+      // 无 node-pty：stdin 可写（Ctrl+C / 输入），体验弱于 PTY
+      const proc: ChildProcess = spawn(file, args, {
+        cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        shell: false,
+      });
+      const append = (chunk: Buffer | string) => {
+        this.appendOutput(
+          session,
+          typeof chunk === "string" ? chunk : chunk.toString("utf8"),
+        );
+      };
+      proc.stdout?.on("data", append);
+      proc.stderr?.on("data", append);
+      proc.on("error", (err) => {
+        this.appendOutput(session, `\n[error] ${err.message}\n`);
+        this.markExit(session, { exitCode: 1, signal: null });
+      });
+      proc.on("exit", (code, signal) => {
+        this.markExit(session, {
+          exitCode: code,
+          signal: signal ?? null,
+        });
+      });
+      session.write = (data) => {
+        try {
+          proc.stdin?.write(data);
+        } catch {
+          /* ignore */
+        }
+      };
+      session.kill = () => {
+        if (!proc.killed) {
+          try {
+            proc.kill("SIGTERM");
+          } catch {
+            /* ignore */
+          }
+        }
+      };
+    }
 
     this.sessions.set(terminalId, session);
     this.emit({
@@ -218,7 +328,7 @@ export class TerminalService {
       command: title,
       threadId: params.threadId,
       sessionId: params.sessionId,
-      interactive: false,
+      interactive,
     });
     return { terminalId };
   }
@@ -381,8 +491,11 @@ export class TerminalService {
 
   write(terminalId: string, data: string): void {
     const s = this.requireLive(terminalId);
-    if (!s.info.interactive || !s.write) {
-      throw new Error("Terminal is not interactive");
+    if (!s.write) {
+      throw new Error("Terminal does not accept input");
+    }
+    if (s.info.exited) {
+      throw new Error("Terminal has exited");
     }
     s.write(data);
   }

@@ -23,6 +23,7 @@ import {
 } from "./markdown.js";
 import { bindFileLinkDelegate } from "./file-links.js";
 import { SidePaneController } from "./side-pane.js";
+import { PortChipsController } from "./port-chips.js";
 import {
   SettingsPageController,
   type SettingsOpenTarget,
@@ -214,6 +215,8 @@ let defaultOpenTarget: SettingsOpenTarget = "explorer";
 let localePreference: LocalePreference = "system";
 /** Codex 可拖拽文件侧栏 */
 let sidePane: SidePaneController | null = null;
+/** Cursor：本地服务 localhost 气泡 */
+let portChips: PortChipsController | null = null;
 /** Codex 式全页设置 */
 let settingsPage: SettingsPageController | null = null;
 /** 搜索任务面板快捷键（打开时挂、关闭时卸） */
@@ -2353,7 +2356,13 @@ function paintUserMessage(
   rewindBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>`;
   rewindBtn.onclick = (e) => {
     e.stopPropagation();
-    void rewindToUserPrompt(idx, t);
+    const pi = Number(wrap.dataset.promptIndex);
+    const text = wrap.dataset.rawText ?? t;
+    void rewindToUserPrompt(
+      Number.isFinite(pi) ? pi : idx,
+      text,
+      wrap,
+    );
   };
   meta.appendChild(rewindBtn);
 
@@ -2361,6 +2370,29 @@ function paintUserMessage(
 
   el.appendChild(wrap);
   scrollTranscript();
+}
+
+/** 从指定用户消息 DOM 节点起截断 transcript（避免错误 promptIndex 删多） */
+function truncateTranscriptFromUserBlock(
+  hit: HTMLElement,
+  nextIndex: number,
+): void {
+  const el = $("transcript");
+  if (!hit.isConnected || hit.parentElement !== el) {
+    truncateTranscriptFromPrompt(nextIndex);
+    return;
+  }
+  let n: ChildNode | null = hit;
+  while (n) {
+    const nxt: ChildNode | null = n.nextSibling;
+    el.removeChild(n);
+    n = nxt;
+  }
+  nextUserPromptIndex = Math.max(0, nextIndex);
+  processBlockEl = null;
+  processBodyEl = null;
+  processItemCount = 0;
+  resetStreamState(true);
 }
 
 /** 截断 transcript：移除 promptIndex >= target 的用户块及其后全部节点 */
@@ -2381,35 +2413,109 @@ function truncateTranscriptFromPrompt(targetPromptIndex: number): void {
       // 无匹配：清空助手尾部？保险起见不乱删
       return;
     }
-    let n: ChildNode | null = later;
-    while (n) {
-      const nxt: ChildNode | null = n.nextSibling;
-      el.removeChild(n);
-      n = nxt;
+    truncateTranscriptFromUserBlock(later, targetPromptIndex);
+    return;
+  }
+  truncateTranscriptFromUserBlock(hit, targetPromptIndex);
+}
+
+function normalizeRewindPreview(s: string): string {
+  return s.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * 将 UI 上的 promptIndex 对齐到 agent rewindPoints（历史回放/跳过空消息会造成漂移）。
+ * 优先：精确 index → 唯一文本匹配 → 从尾部按序对齐 → 原 UI index。
+ */
+async function resolveAgentRewindIndex(
+  threadId: string,
+  uiPromptIndex: number,
+  previewText: string,
+  userBlock?: HTMLElement | null,
+): Promise<number> {
+  const pts = await inv<{
+    rewindPoints: Array<{ promptIndex: number; promptPreview?: string }>;
+  }>("threads.rewindPoints", { threadId });
+  if (!pts.ok) return uiPromptIndex;
+  const list = pts.data?.rewindPoints ?? [];
+  if (!list.length) return uiPromptIndex;
+
+  if (list.some((p) => p.promptIndex === uiPromptIndex)) {
+    return uiPromptIndex;
+  }
+
+  const blocks = Array.from(
+    document.querySelectorAll(".user-msg-block[data-prompt-index]"),
+  ) as HTMLElement[];
+  let uiOrdinal = userBlock?.isConnected ? blocks.indexOf(userBlock) : -1;
+  if (uiOrdinal < 0) {
+    uiOrdinal = blocks.findIndex(
+      (b) => Number(b.dataset.promptIndex) === uiPromptIndex,
+    );
+  }
+
+  const norm = normalizeRewindPreview(previewText);
+  if (norm) {
+    const textMatches = list.filter((p) => {
+      const pp = normalizeRewindPreview(p.promptPreview || "");
+      if (!pp) return false;
+      return (
+        pp === norm ||
+        pp.startsWith(norm.slice(0, Math.min(48, norm.length))) ||
+        norm.startsWith(pp.slice(0, Math.min(48, pp.length)))
+      );
+    });
+    if (textMatches.length === 1) {
+      return textMatches[0]!.promptIndex;
     }
-  } else {
-    let n: ChildNode | null = hit;
-    while (n) {
-      const nxt: ChildNode | null = n.nextSibling;
-      el.removeChild(n);
-      n = nxt;
+    if (textMatches.length > 1 && uiOrdinal >= 0) {
+      const fromEnd = blocks.length - 1 - uiOrdinal;
+      const candidate = list[list.length - 1 - fromEnd];
+      if (candidate && textMatches.includes(candidate)) {
+        return candidate.promptIndex;
+      }
+      const byStart = list[uiOrdinal];
+      if (byStart && textMatches.includes(byStart)) {
+        return byStart.promptIndex;
+      }
     }
   }
-  nextUserPromptIndex = targetPromptIndex;
-  // 清理过程块指针
-  processBlockEl = null;
-  processBodyEl = null;
-  processItemCount = 0;
-  resetStreamState(true);
+
+  // 从尾部按序对齐（开头历史条数不一致时更稳）
+  if (uiOrdinal >= 0 && blocks.length > 0) {
+    const fromEnd = blocks.length - 1 - uiOrdinal;
+    if (fromEnd >= 0 && fromEnd < list.length) {
+      return list[list.length - 1 - fromEnd]!.promptIndex;
+    }
+    if (uiOrdinal < list.length) {
+      return list[uiOrdinal]!.promptIndex;
+    }
+  }
+
+  return uiPromptIndex;
+}
+
+function restoreComposerAfterRewind(text: string): void {
+  const ta = activeComposerInput();
+  ta.value = text;
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  ta.focus();
+  try {
+    const n = ta.value.length;
+    ta.setSelectionRange(n, n);
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
  * 回退到指定 user prompt 之前（完整：对话+文件）。
- * agent 语义：force=false 仅为预览（success 恒 false）；确认后必须 force=true 才真正执行。
+ * 先立刻弹出确认（避免 preview/attach 卡住无反馈），确认后再对齐 agent index 并 force 执行。
  */
 async function rewindToUserPrompt(
   promptIndex: number,
   previewText: string,
+  userBlock?: HTMLElement | null,
 ): Promise<void> {
   if (turnActive) {
     showToast(tr("chat.rewindWait"), "error");
@@ -2420,74 +2526,37 @@ async function rewindToUserPrompt(
     return;
   }
 
-  const threadId = await ensureLiveThread();
-  if (!threadId) {
-    showToast(tr("chat.rewindAttachFail2"), "error");
-    return;
-  }
-
-  // 预览：force=false 返回 conflicts / clean_files，不改状态
-  const previewRes = await inv<{
-    success: boolean;
-    targetPromptIndex: number;
-    revertedFiles: string[];
-    conflicts: Array<{ path?: string; conflictType?: string }>;
-    cleanFiles?: string[];
-    error?: string;
-  }>("threads.rewindPreview", {
-    threadId,
-    targetPromptIndex: promptIndex,
-  });
-
-  const conflicts = previewRes.data?.conflicts ?? [];
-  const conflictN = conflicts.length;
-  const cleanN =
-    (previewRes.data as { cleanFiles?: string[] } | undefined)?.cleanFiles
-      ?.length ?? 0;
+  const bubbleText =
+    (userBlock?.dataset.rawText ?? previewText ?? "").toString();
   const preview =
-    previewText.length > 80 ? `${previewText.slice(0, 80)}…` : previewText;
+    bubbleText.length > 80 ? `${bubbleText.slice(0, 80)}…` : bubbleText;
 
-  let conflictNote = "";
-  if (conflictN > 0) {
-    const sample = conflicts
-      .slice(0, 5)
-      .map((c) => c.path || "?")
-      .join("\n");
-    conflictNote =
-      `\n\n⚠ 检测到 ${conflictN} 个文件可能被外部修改，确认后将强制覆盖：\n${sample}` +
-      (conflictN > 5 ? "\n…" : "");
-  } else if (cleanN > 0) {
-    conflictNote = `\n\n将还原约 ${cleanN} 个文件快照。`;
-  }
-
-  // 预览阶段 agent 失败（如 index 非法）
-  if (!previewRes.ok && !previewRes.data) {
-    showToast(previewRes.error?.message ?? tr("chat.rewindPreviewFail"), "error");
-    return;
-  }
-  const previewErr = previewRes.data?.error || previewRes.error?.message;
-  if (
-    previewErr &&
-    /Cannot rewind|current prompt index|Valid targets/i.test(previewErr)
-  ) {
-    showToast(previewErr, "error");
-    return;
-  }
-
+  // 立刻确认：不再先等 attach / dry-run（那是点击无反馈的主因）
   const ok = await confirmText({
     title: tr("chat.rewindConfirmTitle"),
-    message:
-      `将恢复到该用户消息执行前的状态（对齐 CLI /rewind · 完整回退）：\n\n` +
-      `· 删除此消息及之后的全部对话\n` +
-      `· 将相关文件恢复为当时快照（未进 git 的改动可能丢失）\n\n` +
-      `目标消息：${preview || tr("chat.rewindConfirmBodyEmpty")}` +
-      conflictNote,
+    message: tr("chat.rewindBody", {
+      preview: preview || tr("chat.rewindConfirmBodyEmpty"),
+    }),
     okLabel: tr("chat.rewindOk"),
     cancelLabel: tr("common.cancel"),
   });
   if (!ok) return;
 
   showToast(tr("chat.rewinding"));
+
+  const threadId = await ensureLiveThread();
+  if (!threadId) {
+    showToast(tr("chat.rewindAttachFail2"), "error");
+    return;
+  }
+
+  const agentIndex = await resolveAgentRewindIndex(
+    threadId,
+    promptIndex,
+    bubbleText,
+    userBlock,
+  );
+
   // 真正执行：必须 force=true（agent 在 force=false 时只做 dry-run）
   const res = await inv<{
     success: boolean;
@@ -2496,7 +2565,7 @@ async function rewindToUserPrompt(
     promptText?: string;
   }>("threads.rewind", {
     threadId,
-    targetPromptIndex: promptIndex,
+    targetPromptIndex: agentIndex,
     force: true,
   });
 
@@ -2507,23 +2576,34 @@ async function rewindToUserPrompt(
     return;
   }
 
+  const appliedIndex =
+    typeof res.data?.targetPromptIndex === "number" &&
+    Number.isFinite(res.data.targetPromptIndex)
+      ? res.data.targetPromptIndex
+      : agentIndex;
+
   // 回退会截断对话/打断 agent 状态：必须清 turn UI（否则发送钮停在 ■）
   endTurn();
-  truncateTranscriptFromPrompt(promptIndex);
-  if (res.data?.promptText) {
-    const ta = (
-      $("chat").classList.contains("hidden")
-        ? $("composer-input")
-        : $("chat-input")
-    ) as HTMLTextAreaElement;
-    ta.value = res.data.promptText;
-    ta.focus();
+  if (userBlock?.isConnected) {
+    truncateTranscriptFromUserBlock(userBlock, appliedIndex);
+  } else {
+    truncateTranscriptFromPrompt(appliedIndex);
   }
+
+  // 优先恢复气泡原文（当时输入）；agent promptText 仅作兜底
+  const restoreText = (bubbleText || res.data?.promptText || "").trim();
+  if (restoreText) {
+    restoreComposerAfterRewind(restoreText);
+  }
+
   const n = res.data?.revertedFiles?.length ?? 0;
   appendLine(
     n > 0
-      ? `已回退到消息 #${promptIndex} 之前（对话+文件，还原 ${n} 个文件）`
-      : `已回退到消息 #${promptIndex} 之前（对话+文件）`,
+      ? tr("chat.rewoundLineFiles", {
+          n: String(appliedIndex),
+          files: String(n),
+        })
+      : tr("chat.rewoundLine", { n: String(appliedIndex) }),
     "system",
   );
   showToast(n > 0 ? tr("chat.rewoundFiles", { n }) : tr("chat.rewound"));
@@ -5778,17 +5858,24 @@ function handleTaskUpdated(ev: {
     return;
   }
   const short = (ev.taskId || "").slice(0, 8);
-  const label =
+  const rawLabel =
     (ev.description || ev.command || "").trim() ||
     (ev.isMonitor ? "monitor" : "task");
-  const kind = ev.isMonitor ? "monitor" : "task";
+  // 过程区可稍长；Toast 用短标签，避免整段 bash -lc 盖住输入栏
+  const labelLog = shortenTaskLabel(rawLabel, 120);
+  const labelToast = shortenTaskLabel(rawLabel, 56);
 
   if (ev.phase === "backgrounded") {
     const line = ev.isMonitor
-      ? tr("task.monitorStarted", { desc: label, id: short })
-      : tr("task.started", { cmd: label, id: short });
+      ? tr("task.monitorStarted", { desc: labelLog, id: short })
+      : tr("task.started", { cmd: labelLog, id: short });
     appendProcessText(line);
-    showToast(line, "info");
+    showToast(
+      ev.isMonitor
+        ? tr("task.monitorStarted", { desc: labelToast, id: short })
+        : tr("task.started", { cmd: labelToast, id: short }),
+      "info",
+    );
     return;
   }
 
@@ -5797,7 +5884,7 @@ function handleTaskUpdated(ev: {
     if (text) {
       appendProcessText(
         tr("task.monitorEvent", {
-          desc: label,
+          desc: labelLog,
           text: text.length > 200 ? text.slice(0, 200) + "…" : text,
         }),
       );
@@ -5809,33 +5896,69 @@ function handleTaskUpdated(ev: {
     if (ev.staleOnLoad) {
       // 冷加载合成完成：只写过程区，不 toast
       appendProcessText(
-        tr("task.staleOnLoad", { desc: label, id: short }),
+        tr("task.staleOnLoad", { desc: labelLog, id: short }),
       );
       return;
     }
     const ok = ev.success !== false;
-    let line: string;
     if (ok) {
-      line = tr("task.completed", { desc: label, id: short });
+      let line = tr("task.completed", { desc: labelLog, id: short });
       if (ev.willWake) {
         line += " · " + tr("task.willWake");
       }
       appendProcessText(line);
-      showToast(line, "info");
+      showToast(
+        tr("task.completed", { desc: labelToast, id: short }) +
+          (ev.willWake ? " · " + tr("task.willWake") : ""),
+        "info",
+      );
     } else {
       const detail =
         ev.signal ||
         (ev.exitCode != null ? `exit ${ev.exitCode}` : "") ||
         "";
-      line = tr("task.failed", {
-        desc: label,
-        id: short,
-        detail: detail || "error",
-      });
-      appendProcessText(line);
-      showToast(line, "error");
+      appendProcessText(
+        tr("task.failed", {
+          desc: labelLog,
+          id: short,
+          detail: detail || "error",
+        }),
+      );
+      // 失败：过程区已有完整记录；Toast 只给短提示，不盖满输入栏
+      showToast(
+        tr("task.failed", {
+          desc: labelToast,
+          id: short,
+          detail: detail || "error",
+        }),
+        "error",
+      );
     }
   }
+}
+
+/** 把 agent 的 /bin/bash -lc 'cd … && cmd' 收成可读短标签 */
+function shortenTaskLabel(raw: string, maxLen: number): string {
+  let s = raw.trim().replace(/\s+/g, " ");
+  if (!s) return s;
+  const wrapped = s.match(
+    /^\/bin\/(?:ba)?sh\s+-l?c\s+(['"])([\s\S]*)\1\s*$/i,
+  );
+  if (wrapped?.[2]) s = wrapped[2].trim();
+  // cd /path && real-command → 保留后半
+  const parts = s.split(/\s&&\s/);
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1]!.trim();
+    if (last && !/^cd\s+/i.test(last)) s = last;
+  }
+  if (
+    (s.startsWith("'") && s.endsWith("'")) ||
+    (s.startsWith('"') && s.endsWith('"'))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  if (s.length > maxLen) s = s.slice(0, Math.max(0, maxLen - 1)) + "…";
+  return s;
 }
 
 function applyAgentGoalEvent(ev: {
@@ -7728,7 +7851,7 @@ async function sendContinue(): Promise<void> {
 // ── 侧栏分类（文件 / 浏览器 / 终端，已收进侧栏） ───────────
 
 async function showFilesPanel(): Promise<void> {
-  await sidePane?.showChangesSummary();
+  sidePane?.setCategory("files", true);
 }
 
 async function showBrowserPanel(): Promise<void> {
@@ -7737,6 +7860,10 @@ async function showBrowserPanel(): Promise<void> {
 
 async function showTerminalPanel(): Promise<void> {
   sidePane?.setCategory("terminal", true);
+}
+
+async function showChangesPanel(): Promise<void> {
+  await sidePane?.showChangesSummary();
 }
 
 // ── Modals ─────────────────────────────────────────────────
@@ -8400,6 +8527,7 @@ function onEvent(raw: unknown): void {
     ev.type === "terminal.closed"
   ) {
     sidePane?.onTerminalEvent(ev);
+    portChips?.onTerminalEvent(ev);
     return;
   }
   // 计划审批 / 模式变更：与 transcript 挂起无关（exit_plan 可在任意时机弹出）
@@ -8635,6 +8763,18 @@ npm start</pre>
     },
     // 计划不进分类轨；仅 /view-plan · chip · exit_plan 打开
   });
+  portChips = new PortChipsController({
+    openPreview: (svc) => sidePane?.openBrowserPreview(svc),
+    openTerminal: (svc) => sidePane?.openTerminalForService(svc),
+    openExternal: (url) => {
+      void inv("system.openExternal", { url }).then((res) => {
+        if (!res.ok) {
+          showToast(res.error?.message ?? tr("port.openFailed"), "error");
+        }
+      });
+    },
+  });
+  portChips.mount(["composer-port-bar", "composer-port-bar-welcome"]);
   bindPlanPanel();
   bindCodeCopyDelegate($("transcript"));
   bindFileLinkDelegate($("transcript"), async (filePath, line) => {
@@ -9053,6 +9193,28 @@ npm start</pre>
       }
       e.preventDefault();
       void cycleSessionMode();
+      return;
+    }
+    // Ctrl/⌘+J：打开终端（对齐 Cursor）
+    if (
+      (ev.metaKey || ev.ctrlKey) &&
+      !ev.shiftKey &&
+      !ev.altKey &&
+      ev.key.toLowerCase() === "j"
+    ) {
+      e.preventDefault();
+      void showTerminalPanel();
+      return;
+    }
+    // Ctrl/⌘+E：Changes（对齐 Cursor 侧栏菜单）
+    if (
+      (ev.metaKey || ev.ctrlKey) &&
+      !ev.shiftKey &&
+      !ev.altKey &&
+      ev.key.toLowerCase() === "e"
+    ) {
+      e.preventDefault();
+      void showChangesPanel();
       return;
     }
     // Ctrl+B：展开/收起左侧栏

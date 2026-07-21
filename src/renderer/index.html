@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://cdn.simpleicons.org;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.simpleicons.org; frame-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:*;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Grok Desktop</title>
@@ -183,6 +183,7 @@
                   </div>
                 </div>
                 <div id="prompt-queue-bar-welcome" class="prompt-queue-bar hidden" aria-live="polite"></div>
+                <div id="composer-port-bar-welcome" class="composer-port-bar hidden" aria-live="polite"></div>
                 <div class="composer-card">
                   <div id="composer-attachments" class="attach-chips hidden"></div>
                   <textarea
@@ -242,6 +243,7 @@
                 <button type="button" class="chat-scroll-fab hidden" id="btn-scroll-down" data-i18n-title="composer.scrollLatest" title="滚到最新"><span data-sf="arrowDown" data-sf-size="14"></span></button>
                 <div id="prompt-queue-bar" class="prompt-queue-bar hidden" aria-live="polite"></div>
                 <div class="chat-composer-wrap">
+                  <div id="composer-port-bar" class="composer-port-bar hidden" aria-live="polite"></div>
                   <div id="goal-banner-chat" class="goal-banner hidden" aria-live="polite">
                     <div class="goal-banner-main">
                       <span class="goal-banner-ico" data-sf="circleDot" aria-hidden="true"></span>
@@ -314,7 +316,7 @@
                 title="打开…"
                 aria-haspopup="menu"
                 aria-expanded="false"
-              >+</button>
+              ><span data-sf="plus" data-sf-size="16" data-sf-class="sf-ico sf-ico--tool"></span></button>
               <div class="side-pane-top-lead" id="side-pane-top-lead"></div>
               <div class="side-pane-top-spacer"></div>
               <div class="side-pane-top-actions" id="side-pane-top-actions"></div>
@@ -417,20 +419,71 @@
                 <div class="side-cat-body changes-pane-body" id="side-changes-body"></div>
               </div>
 
-              <!-- 浏览器类 -->
+              <!-- 浏览器类：本地服务预览（iframe）+ 收藏 -->
               <div class="side-cat-view hidden" id="side-cat-browser" data-cat="browser">
                 <div class="side-chrome" id="side-chrome-browser">
-                  <button type="button" class="side-chrome-back" data-side-home data-i18n-title="side.backHome" title="返回">←</button>
+                  <button type="button" class="side-chrome-back icon-ghost sm" data-side-home data-i18n-title="side.backHome" title="返回" aria-label="返回">
+                    <span data-sf="chevronLeft" data-sf-size="15" data-sf-class="sf-ico sf-ico--tool"></span>
+                  </button>
                   <span class="side-chrome-title" data-i18n="side.homeBrowser">Browser</span>
                   <div class="side-chrome-spacer"></div>
+                  <div class="browser-chrome-actions">
+                    <button type="button" class="icon-ghost sm" id="btn-browser-favs" data-i18n-title="port.favorites" title="收藏夹" aria-haspopup="menu" aria-expanded="false">
+                      <span data-sf="star" data-sf-size="14" data-sf-class="sf-ico sf-ico--tool"></span>
+                    </button>
+                    <button type="button" class="icon-ghost sm hidden" id="btn-browser-to-term" data-i18n-title="port.toTerminal" title="打开对应终端">
+                      <span data-sf="terminal" data-sf-size="14" data-sf-class="sf-ico sf-ico--tool"></span>
+                    </button>
+                    <button type="button" class="icon-ghost sm hidden" id="btn-browser-external" data-i18n-title="port.menuExternal" title="系统浏览器打开">
+                      <span data-sf="arrowUpRight" data-sf-size="14" data-sf-class="sf-ico sf-ico--tool"></span>
+                    </button>
+                    <button type="button" class="icon-ghost sm hidden" id="btn-browser-reload" data-i18n-title="port.reload" title="刷新">
+                      <span data-sf="arrowClockwise" data-sf-size="14" data-sf-class="sf-ico sf-ico--tool"></span>
+                    </button>
+                  </div>
                 </div>
-                <div class="side-cat-body" id="side-browser-body">
-                  <p class="side-cat-lead" data-i18n="side.browserLead">浏览器工具由 agent 通过工具调用使用。</p>
-                  <ul class="side-cat-list">
-                    <li data-i18n="side.browserLi1">打开页面 / 抓取内容</li>
-                    <li data-i18n="side.browserLi2">在对话中描述目标 URL 或操作</li>
-                  </ul>
-                  <p class="side-cat-muted" data-i18n="side.browserMuted">完整内嵌浏览器为后续能力。</p>
+                <div class="side-cat-body browser-pane-body" id="side-browser-body">
+                  <div id="browser-placeholder">
+                    <p class="side-cat-lead" data-i18n="side.browserLead">本地服务预览会出现在这里。</p>
+                    <ul class="side-cat-list">
+                      <li data-i18n="side.browserLi1">Agent 启动服务后，输入框上方出现 localhost 气泡</li>
+                      <li data-i18n="side.browserLi2">点气泡预览页面，再点一次跳到对应 Terminal</li>
+                      <li data-i18n="side.browserLi3">自动化浏览（browser_tab）由 agent 经本机 Chrome 完成</li>
+                    </ul>
+                    <div id="browser-favorites-block" class="browser-favorites-block hidden">
+                      <div class="browser-favorites-head" data-i18n="port.favorites">收藏</div>
+                      <ul id="browser-favorites-list" class="browser-favorites-list"></ul>
+                    </div>
+                    <p class="side-cat-muted" data-i18n="side.browserMuted">也可从气泡菜单在系统浏览器中打开。</p>
+                  </div>
+                  <div id="browser-preview" class="browser-preview hidden">
+                    <div class="browser-preview-urlbar">
+                      <span class="browser-preview-lock" data-sf="globe" data-sf-size="13" data-sf-class="sf-ico sf-ico--sm" aria-hidden="true"></span>
+                      <input
+                        type="text"
+                        id="browser-preview-url"
+                        class="browser-preview-url"
+                        spellcheck="false"
+                        autocomplete="off"
+                        data-i18n-placeholder="port.urlPlaceholder"
+                        placeholder="http://127.0.0.1:8765/"
+                      />
+                      <button type="button" class="browser-star" id="btn-browser-star" data-i18n-title="port.favorite" title="收藏">
+                        <span data-sf="star" data-sf-size="14" data-sf-class="sf-ico sf-ico--tool"></span>
+                      </button>
+                    </div>
+                    <div id="browser-preview-fallback" class="browser-preview-fallback hidden">
+                      <p class="browser-preview-fallback-title" data-i18n="port.previewBlocked">无法在侧栏内嵌预览</p>
+                      <p class="browser-preview-fallback-body" data-i18n="port.previewBlockedHint">页面可能禁止 iframe，或服务尚未就绪。可改用系统浏览器打开。</p>
+                      <button type="button" class="btn-dark" id="btn-browser-fallback-external" data-i18n="port.menuExternal">系统浏览器打开</button>
+                    </div>
+                    <iframe
+                      id="browser-preview-frame"
+                      class="browser-preview-frame"
+                      title="Local preview"
+                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                    ></iframe>
+                  </div>
                 </div>
               </div>
 

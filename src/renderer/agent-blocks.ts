@@ -20,19 +20,39 @@ export function extractToolMeta(
 ): {
   paths: string[];
   summary: string;
-  kind: "read" | "write" | "shell" | "search" | "other";
+  kind: "read" | "write" | "shell" | "search" | "browser" | "other";
   command?: string;
   output?: string;
+  url?: string;
+  imageUrl?: string;
 } {
   const paths: string[] = [];
   let summary = "";
   let command: string | undefined;
   let output: string | undefined;
+  let url: string | undefined;
+  let imageUrl: string | undefined;
   const kind = classifyTool(name || "");
 
   const walk = (v: unknown, depth = 0): void => {
     if (depth > 4 || v == null) return;
     if (typeof v === "string") {
+      if (
+        !url &&
+        /^https?:\/\//i.test(v) &&
+        v.length < 500 &&
+        !v.includes("\n")
+      ) {
+        url = v;
+      }
+      if (
+        !imageUrl &&
+        (/^data:image\//i.test(v) ||
+          /\.(png|jpe?g|webp|gif)(\?|$)/i.test(v)) &&
+        v.length < 2_000_000
+      ) {
+        imageUrl = v;
+      }
       if (
         (/[/\\]/.test(v) || /^[A-Za-z]:\\/.test(v)) &&
         v.length < 400 &&
@@ -59,6 +79,32 @@ export function extractToolMeta(
       ]) {
         if (typeof o[key] === "string") walk(o[key], depth + 1);
       }
+      for (const key of ["url", "href", "pageUrl", "page_url", "targetUrl"]) {
+        if (typeof o[key] === "string" && !url) {
+          const s = o[key] as string;
+          if (/^https?:\/\//i.test(s)) url = s;
+        }
+      }
+      for (const key of [
+        "screenshot",
+        "image",
+        "imageUrl",
+        "image_url",
+        "dataUrl",
+        "data_url",
+        "thumbnail",
+      ]) {
+        if (typeof o[key] === "string" && !imageUrl) {
+          const s = o[key] as string;
+          if (
+            /^data:image\//i.test(s) ||
+            /^https?:\/\//i.test(s) ||
+            /\.(png|jpe?g|webp|gif)(\?|$)/i.test(s)
+          ) {
+            imageUrl = s;
+          }
+        }
+      }
       if (typeof o.title === "string" && !summary) summary = o.title;
       if (typeof o.command === "string") {
         command = o.command;
@@ -70,6 +116,9 @@ export function extractToolMeta(
       }
       if (typeof o.query === "string" && !summary) {
         summary = o.query.slice(0, 120);
+      }
+      if (typeof o.action === "string" && kind === "browser" && !summary) {
+        summary = o.action.slice(0, 120);
       }
       for (const key of [
         "stdout",
@@ -100,6 +149,12 @@ export function extractToolMeta(
             "content",
             "result",
             "text",
+            "url",
+            "href",
+            "screenshot",
+            "image",
+            "imageUrl",
+            "dataUrl",
           ].includes(k)
         ) {
           continue;
@@ -109,24 +164,31 @@ export function extractToolMeta(
     }
   };
   walk(raw);
+  if (kind === "browser" && url && !summary) {
+    summary = url.length > 80 ? `${url.slice(0, 77)}…` : url;
+  }
   return {
     paths: paths.slice(0, 5),
     summary,
     kind,
     command,
     output,
+    url,
+    imageUrl,
   };
 }
 
 function classifyTool(
   name: string,
-): "read" | "write" | "shell" | "search" | "other" {
+): "read" | "write" | "shell" | "search" | "browser" | "other" {
   const n = name.toLowerCase();
+  if (/browser_tab|browser_network|browser_use|playwright|puppeteer|chromium/.test(n))
+    return "browser";
   if (/read|cat|open|view|get_file|read_file/.test(n)) return "read";
   if (/write|edit|patch|apply|create|update|str_replace|search_replace/.test(n))
     return "write";
   if (/shell|bash|cmd|terminal|exec|run|powershell/.test(n)) return "shell";
-  if (/search|grep|glob|find|web_search/.test(n)) return "search";
+  if (/search|grep|glob|find|web_search|web_fetch/.test(n)) return "search";
   return "other";
 }
 
@@ -140,6 +202,8 @@ function kindIcon(kind: string): string {
       return sfIcon("command", { size: 13, className: "sf-ico sf-ico--sm" });
     case "search":
       return sfIcon("search", { size: 13, className: "sf-ico sf-ico--sm" });
+    case "browser":
+      return sfIcon("globe", { size: 13, className: "sf-ico sf-ico--sm" });
     default:
       return sfIcon("settings", { size: 13, className: "sf-ico sf-ico--sm" });
   }
@@ -148,7 +212,20 @@ function kindIcon(kind: string): string {
 function detailHtml(meta: ReturnType<typeof extractToolMeta>): string {
   const cmd = meta.command?.trim();
   const out = meta.output?.trim();
-  if (!cmd && !out && !meta.paths.length) return "";
+  const url = meta.url?.trim();
+  const imageUrl = meta.imageUrl?.trim();
+  if (!cmd && !out && !meta.paths.length && !url && !imageUrl) return "";
+  const browserBlock =
+    meta.kind === "browser" || url || imageUrl
+      ? `<div class="tool-browser">` +
+        (url
+          ? `<a class="tool-browser-url" href="${esc(url)}" rel="noopener">${esc(url)}</a>`
+          : "") +
+        (imageUrl
+          ? `<img class="tool-browser-shot" src="${esc(imageUrl)}" alt="screenshot" loading="lazy" />`
+          : "") +
+        `</div>`
+      : "";
   const cmdBlock = cmd
     ? `<div class="tool-shell-head"><span class="tool-shell-label">Shell</span><code class="tool-shell-cmd">$ ${esc(cmd)}</code></div>`
     : "";
@@ -166,6 +243,7 @@ function detailHtml(meta: ReturnType<typeof extractToolMeta>): string {
     : "";
   return (
     `<div class="tool-detail" hidden>` +
+    browserBlock +
     cmdBlock +
     outBlock +
     pathsBlock +
@@ -188,7 +266,11 @@ export function buildToolCardHtml(opts: {
     ? `<span class="tool-spin"></span>`
     : `<span class="tool-spin done">✓</span>`;
   const hasDetail = Boolean(
-    meta.command || meta.output || meta.paths.length,
+    meta.command ||
+      meta.output ||
+      meta.paths.length ||
+      meta.url ||
+      meta.imageUrl,
   );
   const caret = hasDetail
     ? `<span class="tool-caret" aria-hidden="true">▸</span>`
